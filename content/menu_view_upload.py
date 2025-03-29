@@ -311,7 +311,7 @@ class MenuViewer:
             self.ingredient_highlight_box,
             self.top_display
         ])
-    
+    # Add this method to the MenuViewer class
     def setup_ingredient_highlight_section(self):
         """Set up the ingredient highlighting section"""
         # Create ingredient highlight title
@@ -323,9 +323,12 @@ class MenuViewer:
             options=tuple(), # Will be populated after loading data
             description='Ingredient:',
             ensure_option=False,
-            continuous_update=False,
+            continuous_update=True,  # Changed to True for dynamic matching
             layout=widgets.Layout(width='300px')
         )
+        
+        # Add observer for text changes to implement dynamic matching
+        self.ingredient_input.observe(self.on_ingredient_input_change, names='value')
         
         # Create add button
         self.add_ingredient_button = widgets.Button(
@@ -346,6 +349,17 @@ class MenuViewer:
         # Create container for ingredient chips
         self.ingredient_chips_container = widgets.HBox([], layout=widgets.Layout(flex_wrap='wrap'))
         
+        # Create container for matching ingredient buttons
+        self.matching_ingredients_container = widgets.Box(
+            [], 
+            layout=widgets.Layout(
+                display='flex',
+                flex_flow='row wrap',
+                width='100%',
+                margin='5px 0'
+            )
+        )
+        
         # Assemble input row
         ingredient_input_row = widgets.HBox([
             self.ingredient_input, 
@@ -357,9 +371,101 @@ class MenuViewer:
         self.ingredient_highlight_box = widgets.VBox([
             self.ingredient_highlight_title,
             ingredient_input_row,
+            self.matching_ingredients_container,  # Add the matching ingredients container
             self.ingredient_chips_container
         ], layout={'border': '1px solid lightgray', 'padding': '5px', 'margin': '5px'})
+
+    # def setup_ingredient_highlight_section(self):
+    #     """Set up the ingredient highlighting section"""
+    #     # Create ingredient highlight title
+    #     self.ingredient_highlight_title = widgets.HTML(value="<h3>Highlight by Ingredients:</h3>")
+        
+    #     # Create ingredient input with autocomplete
+    #     self.ingredient_input = widgets.Combobox(
+    #         placeholder='Enter ingredient to highlight',
+    #         options=tuple(), # Will be populated after loading data
+    #         description='Ingredient:',
+    #         ensure_option=False,
+    #         continuous_update=False,
+    #         layout=widgets.Layout(width='300px')
+    #     )
+        
+    #     # Create add button
+    #     self.add_ingredient_button = widgets.Button(
+    #         description='Add',
+    #         button_style='success',
+    #         layout=widgets.Layout(width='auto')
+    #     )
+    #     self.add_ingredient_button.on_click(self.on_add_ingredient)
+        
+    #     # Create clear button
+    #     self.clear_ingredients_button = widgets.Button(
+    #         description='Clear All',
+    #         button_style='warning',
+    #         layout=widgets.Layout(width='auto')
+    #     )
+    #     self.clear_ingredients_button.on_click(self.on_clear_ingredients)
+        
+    #     # Create container for ingredient chips
+    #     self.ingredient_chips_container = widgets.HBox([], layout=widgets.Layout(flex_wrap='wrap'))
+        
+    #     # Assemble input row
+    #     ingredient_input_row = widgets.HBox([
+    #         self.ingredient_input, 
+    #         self.add_ingredient_button,
+    #         self.clear_ingredients_button
+    #     ])
+        
+    #     # Assemble ingredient highlight box
+    #     self.ingredient_highlight_box = widgets.VBox([
+    #         self.ingredient_highlight_title,
+    #         ingredient_input_row,
+    #         self.ingredient_chips_container
+    #     ], layout={'border': '1px solid lightgray', 'padding': '5px', 'margin': '5px'})
     
+    def on_ingredient_input_change(self, change):
+        """Handle changes to the ingredient input field and create matching buttons"""
+        # Get the current input text
+        input_text = change['new'].strip().lower()
+        
+        # Clear the matching ingredients container
+        self.matching_ingredients_container.children = []
+        
+        # If input is empty or too short, don't show any matches
+        if not input_text or len(input_text) < 2:
+            return
+        
+        # Get valid ingredients that match the input text
+        valid_ingredients = self.df_widget.simple_ingredients
+        matching_ingredients = [ing for ing in self.df_widget.simple_ingredients
+                            if input_text in ing.lower() ]
+        
+        # Only create buttons if there are between 1 and 10 matches (inclusive)
+        if 1 <= len(matching_ingredients) <= 10:
+            matching_buttons = []
+            
+            for ing in matching_ingredients:
+                # Create button with ingredient name
+                btn = widgets.Button(
+                    description=ing,
+                    layout=widgets.Layout(
+                        margin='3px',
+                        max_width='200px',
+                        overflow='hidden',
+                        text_overflow='ellipsis'
+                    ),
+                    tooltip=ing
+                )
+                
+                # Set up click handler to add this ingredient
+                btn.on_click(lambda b, ing=ing: self.add_highlighted_ingredient(ing))
+                
+                matching_buttons.append(btn)
+            
+            # Update the matching ingredients container
+            self.matching_ingredients_container.children = matching_buttons
+
+
     def create_ingredient_chip(self, ingredient):
         """Create a removable chip for a highlighted ingredient"""
         # Create container
@@ -397,7 +503,14 @@ class MenuViewer:
         """Update the ingredient chips display"""
         chips = [self.create_ingredient_chip(ing) for ing in self.highlighted_ingredients]
         self.ingredient_chips_container.children = chips
-    
+        
+    def add_highlighted_ingredient(self, ingredient):
+        """Add an ingredient to the highlighted ingredients list"""
+        if ingredient not in self.highlighted_ingredients:
+            self.highlighted_ingredients.append(ingredient)
+            self.update_ingredient_chips()
+            self.apply_ingredient_highlighting()
+            
     def on_add_ingredient(self, b):
         """Handle adding an ingredient to highlight"""
         ingredient = self.ingredient_input.value.strip()
@@ -429,6 +542,7 @@ class MenuViewer:
         self.highlighted_ingredients = []
         self.update_ingredient_chips()
         self.apply_ingredient_highlighting()
+        self.ingredient_input.value = ""
     
     def get_valid_ingredients(self):
         """Get set of valid ingredients for highlighting"""
@@ -482,9 +596,10 @@ class MenuViewer:
             self.allvals = nicks.union(ingrs)
             self.searchinput.options = tuple(ingrs.difference(nicks))
             self.df_widget.all_ingredients = self.allvals
+            self.df_widget.simple_ingredients = nicks.intersection(ingrs)
             
             # Update ingredient input options
-            self.ingredient_input.options = tuple(nicks)
+            self.ingredient_input.options = tuple(nicks.intersection(ingrs))
     
     def update_search(self, change):
         """Handle search input changes"""
@@ -662,9 +777,10 @@ class MenuDisplayWidget:
         
         # Initialize ingredient lists
         self.all_ingredients = set()
-        if cc and 'nickname' in cc.uni_g.columns:
-            nicks = set(cc.uni_g['nickname'].dropna().unique())
-            ingrs = set(cc.costdf['ingredient'].dropna().unique())
+        self.simple_ingredients = set()
+        if self.cc and 'nickname' in self.cc.uni_g.columns:
+            nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+            ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
             self.all_ingredients = nicks.union(ingrs)
         
         # Set type based on DataFrame structure
@@ -900,7 +1016,12 @@ class MenuDisplayWidget:
                     try:
                         inglist = ingredients_by_weight(clean_ingredient, row['quantity'])
                         if inglist:
+                            #self.cc.costdf.loc[self.cc.costdf['ingredient'] == clean_ingredient, 'ingredient list'] = ",".join(inglist)
+                            if 'ingredient list' not in self.cc.costdf.columns:
+                                self.cc.costdf['ingredient list'] = None
                             self.cc.costdf.loc[self.cc.costdf['ingredient'] == clean_ingredient, 'ingredient list'] = ",".join(inglist)
+                            if 'ingredient list' not in self.df.columns:
+                                self.df['ingredient list'] = None
                             self.df.loc[self.df['ingredient'] == clean_ingredient, 'ingredient list'] = ",".join(inglist)
                     except:
                         inglist = []
@@ -993,7 +1114,7 @@ class MenuDisplayWidget:
                     highlight_row = True
 
             # Use a single consistent border style for all highlighted rows
-            border_style = '2px solid #FFEE22' if highlight_row else '2px dotted gray'
+            border_style = '2px dotted #FFEE22' if highlight_row else '2px dotted gray'
                                     
             # Create box layout for the row without border
             box_layout = widgets.Layout(
@@ -1080,12 +1201,6 @@ class MenuDisplayWidget:
         # Split the allergen text into individual allergens
         allergens = [a.strip().lower() for a in allergen_text.split(',')]
         formatted_parts = []
-        
-        # # Check if it already has the warning emoji
-        # has_warning = allergen_text.startswith('⚠️')
-        # if has_warning:
-        #     formatted_parts.append('⚠️ ')
-        #     allergen_text = allergen_text.replace('⚠️ ', '')
         
         # Add icon for each allergen if it exists in our icon dictionary
         for allergen in allergens:
