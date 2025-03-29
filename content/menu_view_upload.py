@@ -7,18 +7,6 @@ from df_functions import *
 from utils import get_xlsx_files
 import io
 
-# allergen_icons = {
-#     'gluten': '<svg height="16" width="16"><circle cx="8" cy="8" r="7" fill="#f5d742" stroke="#333" stroke-width="1"/></svg>',
-#     'dairy': '<svg height="16" width="16"><rect x="2" y="2" width="12" height="12" fill="#ffffff" stroke="#333" stroke-width="1" rx="2"/></svg>',
-#     'egg': '<svg height="16" width="16"><ellipse cx="8" cy="8" rx="7" ry="6" fill="#ffefc1" stroke="#333" stroke-width="1"/></svg>',
-#     'soy': '<svg height="16" width="16"><rect x="3" y="3" width="10" height="10" fill="#9de24f" stroke="#333" stroke-width="1" transform="rotate(45, 8, 8)"/></svg>',
-#     'fish': '<svg height="16" width="16"><path d="M2,8 L8,3 L14,8 L8,13 Z" fill="#a4dbf5" stroke="#333" stroke-width="1"/></svg>',
-#     'shellfish': '<svg height="16" width="16"><path d="M2,8 C2,4 14,4 14,8 C14,12 2,12 2,8 Z" fill="#ffb6c1" stroke="#333" stroke-width="1"/></svg>',
-#     'tree-nut': '<svg height="16" width="16"><polygon points="8,2 14,14 2,14" fill="#d2b48c" stroke="#333" stroke-width="1"/></svg>',
-#     'peanut': '<svg height="16" width="16"><rect x="2" y="4" width="12" height="8" fill="#e6c98a" stroke="#333" stroke-width="1" rx="4"/></svg>',
-#     'poultry': '<svg height="16" width="16"><path d="M3,3 L13,8 L3,13 Z" fill="#ffd6a5" stroke="#333" stroke-width="1"/></svg>',
-#     'sesame': '<svg height="16" width="16"><circle cx="8" cy="8" r="7" fill="#f9e076" stroke="#333" stroke-width="1"/><circle cx="8" cy="8" r="3" fill="#e6ca46" stroke="#333" stroke-width="1"/></svg>'
-# }
 allergen_icons = {
     'gluten': '<svg height="16" width="16"><polygon points="8,2 12,9 4,9" fill="#f5d742" stroke="#333" stroke-width="1"/><polygon points="8,7 13,15 3,15" fill="#f5d742" stroke="#333" stroke-width="1"/></svg>',
     'dairy': '<svg height="16" width="16"><rect x="2" y="2" width="12" height="12" fill="#ffffff" stroke="#333" stroke-width="1" rx="2"/></svg>',
@@ -374,54 +362,6 @@ class MenuViewer:
             self.matching_ingredients_container,  # Add the matching ingredients container
             self.ingredient_chips_container
         ], layout={'border': '1px solid lightgray', 'padding': '5px', 'margin': '5px'})
-
-    # def setup_ingredient_highlight_section(self):
-    #     """Set up the ingredient highlighting section"""
-    #     # Create ingredient highlight title
-    #     self.ingredient_highlight_title = widgets.HTML(value="<h3>Highlight by Ingredients:</h3>")
-        
-    #     # Create ingredient input with autocomplete
-    #     self.ingredient_input = widgets.Combobox(
-    #         placeholder='Enter ingredient to highlight',
-    #         options=tuple(), # Will be populated after loading data
-    #         description='Ingredient:',
-    #         ensure_option=False,
-    #         continuous_update=False,
-    #         layout=widgets.Layout(width='300px')
-    #     )
-        
-    #     # Create add button
-    #     self.add_ingredient_button = widgets.Button(
-    #         description='Add',
-    #         button_style='success',
-    #         layout=widgets.Layout(width='auto')
-    #     )
-    #     self.add_ingredient_button.on_click(self.on_add_ingredient)
-        
-    #     # Create clear button
-    #     self.clear_ingredients_button = widgets.Button(
-    #         description='Clear All',
-    #         button_style='warning',
-    #         layout=widgets.Layout(width='auto')
-    #     )
-    #     self.clear_ingredients_button.on_click(self.on_clear_ingredients)
-        
-    #     # Create container for ingredient chips
-    #     self.ingredient_chips_container = widgets.HBox([], layout=widgets.Layout(flex_wrap='wrap'))
-        
-    #     # Assemble input row
-    #     ingredient_input_row = widgets.HBox([
-    #         self.ingredient_input, 
-    #         self.add_ingredient_button,
-    #         self.clear_ingredients_button
-    #     ])
-        
-    #     # Assemble ingredient highlight box
-    #     self.ingredient_highlight_box = widgets.VBox([
-    #         self.ingredient_highlight_title,
-    #         ingredient_input_row,
-    #         self.ingredient_chips_container
-    #     ], layout={'border': '1px solid lightgray', 'padding': '5px', 'margin': '5px'})
     
     def on_ingredient_input_change(self, change):
         """Handle changes to the ingredient input field and create matching buttons"""
@@ -1053,9 +993,6 @@ class MenuDisplayWidget:
                         if should_highlight:
                             style_attr = ' style="font-weight: bold; border: 2px solid #FFee22; border-radius: 3px; padding: 0 2px;"'
                             ing_formatted = f"<span{style_attr}>{ing}</span>"
-                        # if should_highlight:
-                        #     style_attr = ' style="font-weight: bold; background-color: #ffee22;"'
-                        #     ing_formatted = f"<span{style_attr}>{ing}</span>"
                         
                         formatted_ingredients_parts.append(ing_formatted)
                     
@@ -1065,7 +1002,7 @@ class MenuDisplayWidget:
                     inglist_widget = widgets.HTML(
                         value=f'INGREDIENTS: {formatted_ingredients}',
                         layout=widgets.Layout(
-                            width='60%',
+                            width='70%',
                             overflow='auto',  # Allow scrolling if needed
                             flex='1 1 auto'   # Grow and shrink to fill available space
                         )
@@ -1076,26 +1013,32 @@ class MenuDisplayWidget:
                             row_widgets.append(item_widget)
                         else:
                             row_widgets.append(widgets.VBox([item_widget, allergen_widget], layout=widgets.Layout(
-                                width=f'{label_width}px'
+                                #width=f'{label_width}px'
+                                width='30%'
                             )))
                         row_widgets.append(inglist_widget)
                     else:
                         if allergen_widget is None:
                             row_widgets = [item_widget]
                         else:
-                            row_widgets = [item_widget, allergen_widget]
+                            #row_widgets = [item_widget, allergen_widget]
+                            row_widgets = [widgets.HBox([item_widget, allergen_widget], 
+                                   layout=widgets.Layout(width='30%'))]
                         row_widgets.append(inglist_widget)
             
             # Ensure row_widgets has something in it
             if len(row_widgets) == 0:
                 if allergen_widget is None:
-                    row_widgets = [item_widget]
+                    #row_widgets = [item_widget]
+                    row_widgets = [widgets.HBox([item_widget], layout=widgets.Layout(width='30%'))]
                 else:
-                    row_widgets = [item_widget, allergen_widget]
+                    #row_widgets = [item_widget, allergen_widget]
+                    row_widgets = [widgets.HBox([item_widget, allergen_widget], layout=widgets.Layout(width='30%'))]
                 
                 # Add empty placeholder for simple ingredients
                 row_widgets.append(widgets.Label(
-                    layout=widgets.Layout(height=button_height, flex='1 1 auto')
+                    #layout=widgets.Layout(height=button_height, flex='1 1 auto')
+                    layout=widgets.Layout(height=button_height, flex='1 1 auto', width='70%')
                 ))
             
             # Create a HBox for the row and add to rows list
@@ -1206,7 +1149,8 @@ class MenuDisplayWidget:
         for allergen in allergens:
             allergen_clean = allergen.lower().strip()
             if allergen_clean in allergen_icons:
-                formatted_parts.append(f"{allergen_icons[allergen_clean]} {allergen.capitalize()}")
+                formatted_parts.append(f"<span style='white-space: nowrap;'>{allergen_icons[allergen_clean]} {allergen.capitalize()}</span>")
+                #formatted_parts.append(f"{allergen_icons[allergen_clean]} {allergen.capitalize()}")
             else:
                 formatted_parts.append(allergen.capitalize())
         
