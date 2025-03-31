@@ -6,22 +6,21 @@ import os
 from df_functions import *
 from utils import get_xlsx_files
 import io
-
+HL_COLOR = '#d4c96a'
 allergen_icons = {
-    'gluten': '<svg height="16" width="16"><polygon points="8,2 12,9 4,9" fill="#f5d742" stroke="#333" stroke-width="1"/><polygon points="8,7 13,15 3,15" fill="#f5d742" stroke="#333" stroke-width="1"/></svg>',
-    'dairy': '<svg height="16" width="16"><rect x="2" y="2" width="12" height="12" fill="#ffffff" stroke="#333" stroke-width="1" rx="2"/></svg>',
-    'egg': '<svg height="16" width="16"><ellipse cx="8" cy="8" rx="6" ry="8" fill="#ffefc1" stroke="#333" stroke-width="1"/><ellipse cx="8" cy="5" rx="3" ry="2" fill="#fffaf0" stroke="#333" stroke-width="0.5"/></svg>',
+    'gluten': '<svg height="16" width="16"><path d="M3,14 V6 C3,6 1.5,5 1.7,3.5 C2,0.5 15,0.5 15,3.5 C15,5.4 13.3,6 13.3,6 V14 Z" fill="#f7efe0" stroke="#784421" stroke-width="1" stroke-linejoin="round"/></svg>',
+    'dairy': '<svg height="16" width="16"><path d="M6,2 L10,2 L12,6 L12,14 L4,14 L4,6 Z M4,6 L12,6" fill="#ffffff" stroke="#333" stroke-width="1"/></svg>',
+    'egg': '<svg height="16" width="16"><ellipse cx="8" cy="8" rx="6" ry="8" fill="#fffaf0" stroke="#333" stroke-width="1"/><circle cx="8" cy="7" r="4" fill="#f5d742" stroke="none"/></svg>',
     'soy': '<svg height="16" width="16"><path d="M8,2 C10,2 12,4 12,7 C12,10 10,12 8,14 C6,12 4,10 4,7 C4,4 6,2 8,2 Z" fill="#9de24f" stroke="#333" stroke-width="1"/></svg>',
-    'fish': '<svg height="16" width="16"><path d="M3,8 C5,4 9,4 12,8 C9,12 5,12 3,8 Z" fill="#a4dbf5" stroke="#333" stroke-width="1"/><polygon points="12,8 16,5 16,11" fill="#a4dbf5" stroke="#333" stroke-width="1"/></svg>',
+    'fish': '<svg height="16" width="16"><path d="M2,8 C5,4 10,4 13,8 C10,12 5,12 2,8 Z" fill="#a4dbf5" stroke="#333" stroke-width="0.5"/><polygon points="13,8 16,6 16,10" fill="#a4dbf5" stroke="#333" stroke-width="0.5"/></svg>',
     'shellfish': '<svg height="16" width="16"><path d="M2,10 C2,6 6,6 8,8 C10,6 14,6 14,10" fill="none" stroke="#ffb6c1" stroke-width="3" stroke-linecap="round"/></svg>',
-    'tree-nut': '<svg height="16" width="16"><polygon points="8,2 14,14 2,14" fill="#d2b48c" stroke="#333" stroke-width="1"/></svg>',
+    'tree-nut': '<svg height="16" width="16"><polygon points="8,2 14,14 2,14" fill="#8B4513" stroke="#333" stroke-width="1"/></svg>',
     'peanut': '<svg height="16" width="16"><ellipse cx="5" cy="8" rx="4" ry="6" fill="#e6c98a" stroke="#333" stroke-width="1"/><ellipse cx="11" cy="8" rx="4" ry="6" fill="#e6c98a" stroke="#333" stroke-width="1"/></svg>',
-    'poultry': '<svg height="16" width="16"><path d="M3,3 L13,8 L3,13 Z" fill="#ffd6a5" stroke="#333" stroke-width="1"/></svg>',
+    'poultry': '<svg height="16" width="16"><path d="M2,2 L14,2 C8,8 4,10 2,10 Z" fill="#ffcc00" stroke="#1a1a1a" stroke-width="0.5" stroke-linejoin="round"/><path d="M4,10 C3,10 6,12 5,14 C4,16 2,14 2,12 C2,11 2,10 2,10 Z" fill="#ff0000" stroke="#1a1a1a" stroke-width="0.5" stroke-linejoin="round"/></svg>',
     'sesame': '<svg height="16" width="16"><circle cx="8" cy="8" r="7" fill="#f9e076" stroke="#333" stroke-width="1"/><circle cx="8" cy="8" r="3" fill="#e6ca46" stroke="#333" stroke-width="1"/></svg>'
 }
-
 # List of common allergens for filtering
-my_allergens = ['gluten', 'dairy', 'egg', 'soy', 'fish', 'shellfish', 'tree-nut', 'peanut', 'poultry', 'sesame']
+my_allergens = ['gluten', 'soy', 'sesame', 'tree-nut', 'peanut', 'dairy', 'egg', 'fish', 'shellfish',  'poultry', ]
 
 class MenuViewer:
     """
@@ -62,14 +61,6 @@ class MenuViewer:
         )
         self.dropdown.observe(self.on_dropdown_change, names='value')
         
-        # Create text box for manual filename entry
-        self.text_box = widgets.Text(
-            description='Filename:',
-            disabled=True,
-            continuous_update=False
-        )
-        self.text_box.observe(self.on_text_box_value_change, names='value')
-        
         # Create refresh button
         self.refresh_button = widgets.Button(
             description='Refresh',
@@ -100,8 +91,7 @@ class MenuViewer:
             widgets.HTML(value="<h3>File Selection</h3>"),
             widgets.HBox([
                 widgets.VBox([
-                    widgets.HBox([self.dropdown, self.refresh_button]),
-                    widgets.HBox([self.text_box])
+                    widgets.HBox([self.dropdown, self.refresh_button])
                 ]),
                 widgets.VBox([
                     self.upload_widget
@@ -190,6 +180,7 @@ class MenuViewer:
         except Exception as e:
             self.selected_file_label.value = f'Error processing CSV file: {str(e)}'
     
+    
     def setup_menu_interface(self):
         """Set up the main menu viewing interface"""
         # Create search input
@@ -220,58 +211,8 @@ class MenuViewer:
             self.dfdisplay
         ], layout={'border': '2px solid green'})
         
-        self.allergen_title = widgets.HTML(value="<h3>Highlight by Allergens:</h3>")
-        self.allergen_checkboxes = []
-        self.allergen_icon_boxes = []
-
-        # Create allergen checkboxes with icons
-        for allergen in allergen_icons:
-            # Create HTML widget with icon and text
-            icon_html = widgets.HTML(
-                value=f"{allergen_icons[allergen]} {allergen.capitalize()}",
-                layout=widgets.Layout(width='120px', margin='0 5px')
-            )
-            
-            # Create checkbox
-            checkbox = widgets.Checkbox(
-                value=False, 
-                indent=False,
-                layout=widgets.Layout(width='24px', margin='0 5px')
-            )
-            checkbox.observe(self.on_allergen_toggle, names='value')
-            checkbox.description = allergen  # Store allergen name in description attribute
-            
-            # Create container for icon and checkbox
-            container = widgets.HBox([
-                checkbox, 
-                icon_html
-            ], layout=widgets.Layout(
-                margin='0 15px 0 0',
-                align_items='center'
-            ))
-            
-            self.allergen_checkboxes.append(checkbox)
-            self.allergen_icon_boxes.append(container)
-
-        # Arrange checkboxes into rows with fewer items per row
-        allergen_rows = [
-            widgets.HBox(
-                self.allergen_icon_boxes[i:i+3], 
-                layout=widgets.Layout(flex_wrap='wrap', align_items='center')
-            ) 
-            for i in range(0, len(self.allergen_icon_boxes), 3)
-        ]
-
-        self.allergen_box = widgets.VBox(
-            [self.allergen_title] + allergen_rows,
-            layout=widgets.Layout(
-                margin='0',
-                padding='10px',
-                border='1px solid lightgray'
-            )
-        )
-        # Create ingredient highlighting section
-        self.setup_ingredient_highlight_section()
+        # Setup combined highlighting section (combines allergen and ingredient highlighting)
+        self.setup_highlighting_section()
         
         # Create menu buttons
         menulist = ['breakfast', 'lunch', 'dinner', 'desserts']
@@ -294,16 +235,73 @@ class MenuViewer:
         self.vbox = widgets.VBox([
             self.file_selector,
             self.title,
+            self.highlighting_container,  # Use the combined highlighting container
             self.menubutton_hbox,
-            self.allergen_box,
-            self.ingredient_highlight_box,
             self.top_display
         ])
-    # Add this method to the MenuViewer class
-    def setup_ingredient_highlight_section(self):
-        """Set up the ingredient highlighting section"""
-        # Create ingredient highlight title
-        self.ingredient_highlight_title = widgets.HTML(value="<h3>Highlight by Ingredients:</h3>")
+        
+    def setup_highlighting_section(self):
+        """Set up the combined highlighting section (allergens and ingredients)"""
+        # Create highlighting section title with less margin
+        self.highlighting_title = widgets.HTML(value="<h3 style='margin-bottom: 5px;'>Highlight Items:</h3>")
+        
+        # Create allergen title with less margin
+        self.allergen_title = widgets.HTML(value="<h4 style='margin-bottom: 5px; margin-top: 5px;'>By Allergen:</h4>")
+        self.allergen_checkboxes = []
+        self.allergen_icon_boxes = []
+        
+        # Create allergen checkboxes with icons in a single row that wraps
+        for allergen in my_allergens:
+            # Store HTML widget reference for updating later
+            icon_html = widgets.HTML(
+                value=f"{allergen_icons[allergen]} {allergen.capitalize()}",
+                layout=widgets.Layout(width='100px', margin='0 5px')
+            )
+            
+            # Create checkbox
+            checkbox = widgets.Checkbox(
+                value=False, 
+                indent=False,
+                layout=widgets.Layout(width='24px', margin='0 5px')
+            )
+            
+            # Define observer that updates the text style when toggled
+            def on_checkbox_toggle(change, allergen=allergen, icon_html=icon_html):
+                if change['new']:  # Checkbox is checked
+                    icon_html.value = f"{allergen_icons[allergen]} <strong><em>{allergen.capitalize()}</em></strong>"
+                else:  # Checkbox is unchecked
+                    icon_html.value = f"{allergen_icons[allergen]} {allergen.capitalize()}"
+            
+            # Observe both the allergen toggle for filtering and our custom toggle for styling
+            checkbox.observe(on_checkbox_toggle, names='value')
+            checkbox.observe(self.on_allergen_toggle, names='value')
+            checkbox.description = allergen  # Store allergen name in description attribute
+            
+            # Create container for icon and checkbox
+            container = widgets.HBox([
+                checkbox, 
+                icon_html
+            ], layout=widgets.Layout(
+                margin='0 10px 0 0',
+                align_items='center',
+            ))
+            
+            self.allergen_checkboxes.append(checkbox)
+            self.allergen_icon_boxes.append(container)
+
+        # Create a single row container for allergen checkboxes that wraps
+        self.allergen_box = widgets.Box(
+            self.allergen_icon_boxes,
+            layout=widgets.Layout(
+                display='flex',
+                flex_flow='row wrap',
+                width='100%',
+                padding='10px'
+            )
+        )
+        
+        # Create ingredient highlighting section with less margin
+        self.ingredient_title = widgets.HTML(value="<h4 style='margin-bottom: 5px; margin-top: 5px;'>By Ingredient:</h4>")
         
         # Create ingredient input with autocomplete
         self.ingredient_input = widgets.Combobox(
@@ -311,7 +309,7 @@ class MenuViewer:
             options=tuple(), # Will be populated after loading data
             description='Ingredient:',
             ensure_option=False,
-            continuous_update=True,  # Changed to True for dynamic matching
+            continuous_update=True,
             layout=widgets.Layout(width='300px')
         )
         
@@ -355,13 +353,31 @@ class MenuViewer:
             self.clear_ingredients_button
         ])
         
-        # Assemble ingredient highlight box
-        self.ingredient_highlight_box = widgets.VBox([
-            self.ingredient_highlight_title,
+        # Assemble ingredient section
+        ingredient_section = widgets.VBox([
+            self.ingredient_title,
             ingredient_input_row,
-            self.matching_ingredients_container,  # Add the matching ingredients container
+            self.matching_ingredients_container,
             self.ingredient_chips_container
-        ], layout={'border': '1px solid lightgray', 'padding': '5px', 'margin': '5px'})
+        ], layout=widgets.Layout(margin='0'))
+        
+        # Assemble allergen section
+        allergen_section = widgets.VBox([
+            self.allergen_title,
+            self.allergen_box
+        ], layout=widgets.Layout(margin='0'))
+        
+        # Create the combined highlighting container with tighter spacing
+        self.highlighting_container = widgets.VBox([
+            self.highlighting_title,
+            allergen_section,
+            ingredient_section
+        ], layout={
+            'border': f'1px solid {HL_COLOR}',
+            'padding': '2px',
+            'margin': '2px',
+            'spacing': '1'  # Reduce spacing between items
+        })
     
     def on_ingredient_input_change(self, change):
         """Handle changes to the ingredient input field and create matching buttons"""
@@ -397,20 +413,25 @@ class MenuViewer:
                     tooltip=ing
                 )
                 
-                # Set up click handler to add this ingredient
-                btn.on_click(lambda b, ing=ing: self.add_highlighted_ingredient(ing))
+                # Disable button if ingredient is already highlighted
+                if ing in self.highlighted_ingredients:
+                    btn.disabled = True
+                    btn.style.button_color = '#f0f0f0'  # Light gray background for disabled buttons
+                    btn.tooltip = f"{ing} (already highlighted)"
+                else:
+                    # Set up click handler to add this ingredient
+                    btn.on_click(lambda b, ing=ing: self.add_highlighted_ingredient(ing))
                 
                 matching_buttons.append(btn)
             
             # Update the matching ingredients container
             self.matching_ingredients_container.children = matching_buttons
 
-
     def create_ingredient_chip(self, ingredient):
         """Create a removable chip for a highlighted ingredient"""
         # Create container
         chip = widgets.HBox(layout=widgets.Layout(
-            border='1px solid #ccc',
+            border=f'1px solid {HL_COLOR}',
             border_radius='15px',
             padding='2px 10px',
             margin='3px',
@@ -447,9 +468,18 @@ class MenuViewer:
     def add_highlighted_ingredient(self, ingredient):
         """Add an ingredient to the highlighted ingredients list"""
         if ingredient not in self.highlighted_ingredients:
+            # Add to highlighted ingredients list
             self.highlighted_ingredients.append(ingredient)
             self.update_ingredient_chips()
             self.apply_ingredient_highlighting()
+            
+            # Find and disable the button that was clicked
+            for button in self.matching_ingredients_container.children:
+                if button.description == ingredient and not button.disabled:
+                    button.disabled = True
+                    button.style.button_color = '#f0f0f0'  # Light gray background
+                    button.tooltip = f"{ingredient} (already highlighted)"
+                    break
             
     def on_add_ingredient(self, b):
         """Handle adding an ingredient to highlight"""
@@ -479,7 +509,13 @@ class MenuViewer:
     
     def on_clear_ingredients(self, b):
         """Handle clearing all highlighted ingredients"""
+        # Update selected allergens list
+        for cb in self.allergen_checkboxes:
+            cb.value = False
+        #self.selected_allergens = []
+        # Apply the filtering
         self.highlighted_ingredients = []
+        #self.apply_allergen_highlighting()
         self.update_ingredient_chips()
         self.apply_ingredient_highlighting()
         self.ingredient_input.value = ""
@@ -494,11 +530,9 @@ class MenuViewer:
         if xlsx_files:
             self.dropdown.options = xlsx_files
             self.dropdown.disabled = False
-            self.text_box.disabled = True
         else:
             self.dropdown.options = ['No .xlsx files found']
             self.dropdown.disabled = True
-            self.text_box.disabled = False
     
     def on_refresh_button_clicked(self, b):
         """Handle refresh button click"""
@@ -507,12 +541,6 @@ class MenuViewer:
     def on_dropdown_change(self, change):
         """Handle dropdown selection change"""
         if change['new'] != 'No .xlsx files found':
-            self.selected_file_label.value = f'Selected file: {change["new"]}'
-            self.read_file(change["new"])
-    
-    def on_text_box_value_change(self, change):
-        """Handle text box value change"""
-        if change['new']:
             self.selected_file_label.value = f'Selected file: {change["new"]}'
             self.read_file(change["new"])
     
@@ -567,71 +595,6 @@ class MenuViewer:
         
         # Apply the filtering
         self.apply_allergen_highlighting()
-        
-    def apply_allergen_highlighting(self):
-        """Apply allergen highlighting based on selected allergens"""
-        # If we have a recipe displayed, update with highlighted ingredients
-        if self.df_widget.df_type == 'recipe' and self.df_widget.last_lookup:
-            # Store current recipe name
-            recipe_name = self.df_widget.last_lookup
-            
-            # Reload the recipe to show all ingredients
-            self.df_widget.lookup_name(recipe_name)
-            
-            # Make a copy of the current DataFrame
-            highlighted_df = self.df_widget.df.copy()
-            
-            # Add highlighting flag for allergens and initialize as False
-            highlighted_df['allergen_highlight'] = False
-            
-            # Initialize empty allergen ingredients set
-            allergen_ingredients = set()
-            
-            # Only process allergen highlighting if there are selected allergens
-            if self.selected_allergens:
-                # Check each ingredient in the recipe
-                for i, row in highlighted_df.iloc[1:].iterrows():
-                    ingredient = row.get('ingredient', '')
-                    ingredient_allergens = set()
-                    
-                    # Get allergens for this ingredient
-                    if 'allergen' in row and isinstance(row['allergen'], str):
-                        ingredient_allergens = {a.strip().lower() for a in row['allergen'].split(',')}
-                    
-                    # If any selected allergen is in this ingredient's allergens, mark for highlighting
-                    if any(a.lower() in ingredient_allergens for a in self.selected_allergens):
-                        highlighted_df.at[i, 'allergen_highlight'] = True
-                        allergen_ingredients.add(ingredient)
-                    
-                    # Also check for sub-ingredients with allergens
-                    if not self.cc.is_ingredient(ingredient) and len(self.cc.get_children(ingredient)) > 0:
-                        # Get flattened ingredients
-                        ing_list = []
-                        try:
-                            if isinstance(row.get('ingredient list'), str):
-                                ing_list = row['ingredient list'].split(',')
-                            else:
-                                flat_ingredients = self.cc.flatten_recipe(ingredient, row['quantity'])
-                                ing_list = flat_ingredients['ingredient'].tolist()
-                            
-                            # Get ingredients with allergens
-                            sub_allergen_ingredients = self.df_widget.get_allergen_ingredients(
-                                ing_list, self.selected_allergens)
-                            
-                            # If any sub-ingredients have allergens, highlight this row
-                            if sub_allergen_ingredients:
-                                highlighted_df.at[i, 'allergen_highlight'] = True
-                                allergen_ingredients.update(sub_allergen_ingredients)
-                        except:
-                            pass
-            
-            # Store allergen ingredients for ingredient list highlighting
-            # Even when empty, we need to set this to ensure previous highlighting is cleared
-            highlighted_df['allergen_ingredients'] = str(allergen_ingredients)
-            
-            # Update the display widget with the highlighted DataFrame
-            self.df_widget.df = highlighted_df
-            self.df_widget.update_display()
     
     def apply_ingredient_highlighting(self):
         """Apply highlighting for selected ingredients"""
@@ -675,6 +638,77 @@ class MenuViewer:
         # Update the display widget with the highlighted DataFrame
         self.df_widget.df = filtered_df
         self.df_widget.update_display()
+    
+    def apply_allergen_highlighting(self):
+        """Apply allergen highlighting based on selected allergens"""
+        # If we have a recipe displayed, update with highlighted ingredients
+        if self.df_widget.df_type == 'recipe' and self.df_widget.last_lookup:
+            # Store current recipe name
+            recipe_name = self.df_widget.last_lookup
+            
+            # Reload the recipe to show all ingredients
+            self.df_widget.lookup_name(recipe_name)
+            
+            # Make a copy of the current DataFrame
+            highlighted_df = self.df_widget.df.copy()
+            
+            # Add highlighting flag for allergens and initialize as False
+            highlighted_df['allergen_highlight'] = False
+            
+            # Initialize empty allergen ingredients set
+            allergen_ingredients = set()
+            
+            # Only process allergen highlighting if there are selected allergens
+            if self.selected_allergens:
+                # Check each ingredient in the recipe
+                for i, row in highlighted_df.iloc[1:].iterrows():
+                    ingredient = row.get('ingredient', '')
+                    ingredient_allergens = set()
+                    
+                    # Get allergens for this ingredient
+                    if 'allergen' in row and isinstance(row['allergen'], str):
+                        ingredient_allergens = {a.strip().lower() for a in row['allergen'].split(',')}
+                    
+                    # If any selected allergen is in this ingredient's allergens, mark for highlighting
+                    if any(a.lower() in ingredient_allergens for a in self.selected_allergens):
+                        highlighted_df.at[i, 'allergen_highlight'] = True
+                        allergen_ingredients.add(ingredient)
+                        
+                        # Store specific matching allergens for bold highlighting
+                        matching_allergens = [a for a in self.selected_allergens if a.lower() in ingredient_allergens]
+                        if 'highlighted_allergens' not in highlighted_df.columns:
+                            highlighted_df['highlighted_allergens'] = None
+                        highlighted_df.at[i, 'highlighted_allergens'] = ','.join(matching_allergens)
+                    
+                    # Also check for sub-ingredients with allergens
+                    if not self.cc.is_ingredient(ingredient) and len(self.cc.get_children(ingredient)) > 0:
+                        # Get flattened ingredients
+                        ing_list = []
+                        try:
+                            if isinstance(row.get('ingredient list'), str):
+                                ing_list = row['ingredient list'].split(',')
+                            else:
+                                flat_ingredients = self.cc.flatten_recipe(ingredient, row['quantity'])
+                                ing_list = flat_ingredients['ingredient'].tolist()
+                            
+                            # Get ingredients with allergens
+                            sub_allergen_ingredients = self.df_widget.get_allergen_ingredients(
+                                ing_list, self.selected_allergens)
+                            
+                            # If any sub-ingredients have allergens, highlight this row
+                            if sub_allergen_ingredients:
+                                highlighted_df.at[i, 'allergen_highlight'] = True
+                                allergen_ingredients.update(sub_allergen_ingredients)
+                        except:
+                            pass
+            
+            # Store allergen ingredients for ingredient list highlighting
+            # Even when empty, we need to set this to ensure previous highlighting is cleared
+            highlighted_df['allergen_ingredients'] = str(allergen_ingredients)
+            
+            # Update the display widget with the highlighted DataFrame
+            self.df_widget.df = highlighted_df
+            self.df_widget.update_display()
     
     def try_load_default_database(self):
         """Try to load the default database file"""
@@ -848,12 +882,6 @@ class MenuDisplayWidget:
             layout=widgets.Layout(width=f'{max_lengths.get("ingredient", min_button_width)}px', height=button_height, flex='0 0 auto')
         ))
 
-        # for col in self.df.columns:
-        #     if col in ['allergen']:
-        #         header_widgets.append(widgets.Label(
-        #             value=col.capitalize(), 
-        #             layout=widgets.Layout(width=f'{max_lengths.get(col, min_button_width)}px', height=button_height, flex='0 0 auto')
-        #         ))
         for col in self.df.columns:
             if col in ['allergen']:
                 header_widgets.append(widgets.HTML(
@@ -878,6 +906,26 @@ class MenuDisplayWidget:
         if self.viewer:
             highlighted_ingredients = self.viewer.highlighted_ingredients
         
+        # First, calculate the maximum button width based on ingredients
+        max_button_width = min_button_width
+        for index, row in self.df.iterrows():
+            if self.df_type == 'recipe':
+                if index == 0:
+                    continue  # Skip recipe title
+                ingredient = row['ingredient']
+            elif self.df_type == 'mentions':
+                ingredient = row['item']
+            else:
+                continue
+            
+            # Calculate width needed for this ingredient text
+            text_width = len(ingredient) * 8  # Approximate pixels per character
+            max_button_width = max(max_button_width, text_width)
+        # Add some padding to ensure no truncation
+        max_button_width += 20
+        # Use this width for all buttons
+        button_width = max_button_width
+        
         # Iterate through DataFrame rows and create widgets for each cell
         for index, row in self.df.iterrows():
             row_widgets = []
@@ -895,27 +943,49 @@ class MenuDisplayWidget:
                         continue
                     
                     # Create recipe title
-                    item_widget = widgets.HTML(value=f"<h2><i>{row['ingredient']}</i></h2>")
-                
+                    item_widget = widgets.HTML(value=f"<h2><i>{row['ingredient']}</i></h2>",
+                                               layout=widgets.Layout(width=f'{button_width}px'))
                 ingredient = row['ingredient']
             elif self.df_type == 'mentions':
                 ingredient = row['item']
             else:
                 continue
+
+            # Create ingredient list
+            inglist = []
             
-            button_width = max(min_button_width, max_lengths.get('ingredient', min_button_width))
-            label_width = button_width
-            
-            # Create a button for the ingredient if it's not already created
+            # row_widgets.append(item_widget) 
             if item_widget is None:
-                # Standard button for all ingredients (no special highlighting in the button itself)
+                # Determine if this row should be highlighted
+                highlight_row = False
+                if row.get('highlight', False):
+                    # Ingredient highlighting
+                    highlight_row = True
+                elif row.get('allergen_highlight', False):
+                    # Allergen highlighting
+                    highlight_row = True
+                elif highlighted_ingredients and inglist:
+                    # Ingredient list matching
+                    if any(ing in highlighted_ingredients for ing in inglist):
+                        highlight_row = True
+                
+                # Apply highlight directly to the button instead of the row
+                button_style = ''
+                # if highlight_row:
+                #     button_style = 'warning'  # Use warning style (usually yellow) for highlighted buttons
+                
+                # Create the button with appropriate style
                 item_widget = widgets.Button(
                     description=ingredient, 
                     layout=widgets.Layout(width=f'{button_width}px', height=button_height),
                     tooltip=f"View details for {ingredient}"
                 )
+                if highlight_row:
+                    item_widget.style.button_color = HL_COLOR   
                 item_widget.on_click(self.make_on_click(ingredient))
-            
+
+            row_widgets.append(item_widget)
+
             # Create labels for the other columns
             for col in self.df.columns:
                 if col in ['ingredient', 'item', 'menu price']:
@@ -927,8 +997,6 @@ class MenuDisplayWidget:
                     # Highlight allergens if the value starts with warning emoji
                     allergen_value = str(row[col])
                     label_style = {}
-                    # if allergen_value.startswith('⚠️'):
-                    #     label_style = {'background_color': '#FFEE22'}
                     
                     if len(allergen_value) > 0:
                         # Format the allergen text with icons
@@ -943,9 +1011,20 @@ class MenuDisplayWidget:
                         )
                     else:
                         allergen_widget = None
+                        
+                    if allergen_widget is not None:
+                        allergen_widget.layout = widgets.Layout(
+                            width='auto',
+                            min_width='150px',
+                            margin='0 10px',
+                            height='auto'
+                        )
             
             # Create ingredient list
             inglist = []
+            ingredients_container = []
+            if allergen_widget is not None:
+                ingredients_container.append(allergen_widget)
             clean_ingredient = ingredient
                 
             if not self.cc.is_ingredient(clean_ingredient) and len(self.cc.get_children(clean_ingredient)) > 1:
@@ -965,7 +1044,7 @@ class MenuDisplayWidget:
                             self.df.loc[self.df['ingredient'] == clean_ingredient, 'ingredient list'] = ",".join(inglist)
                     except:
                         inglist = []
-                        
+                    
                 if inglist:
                     # Format ingredients as HTML list with highlighting
                     formatted_ingredients_parts = []
@@ -989,61 +1068,54 @@ class MenuDisplayWidget:
                                         (allergen_ingredients and ing in allergen_ingredients)
                         
                         # Apply unified highlighting style: bold + highlighted background
-                         # Apply unified highlighting style: bold + outline instead of background
                         if should_highlight:
-                            style_attr = ' style="font-weight: bold; border: 2px solid #FFee22; border-radius: 3px; padding: 0 2px;"'
+                            style_attr = f' style="font-weight: bold; border: 2px solid {HL_COLOR}; border-radius: 3px; padding: 0 2px;"'
                             ing_formatted = f"<span{style_attr}>{ing}</span>"
                         
                         formatted_ingredients_parts.append(ing_formatted)
                     
                     formatted_ingredients = ", ".join(formatted_ingredients_parts)
                     
-                    # Create the ingredient list widget
                     inglist_widget = widgets.HTML(
                         value=f'INGREDIENTS: {formatted_ingredients}',
                         layout=widgets.Layout(
-                            width='70%',
-                            overflow='auto',  # Allow scrolling if needed
-                            flex='1 1 auto'   # Grow and shrink to fill available space
+                            width='100%',
+                            overflow='hidden'
                         )
                     )
-                    
-                    if len(inglist) > 3:
-                        if allergen_widget is None:
-                            row_widgets.append(item_widget)
-                        else:
-                            row_widgets.append(widgets.VBox([item_widget, allergen_widget], layout=widgets.Layout(
-                                #width=f'{label_width}px'
-                                width='30%'
-                            )))
-                        row_widgets.append(inglist_widget)
-                    else:
-                        if allergen_widget is None:
-                            row_widgets = [item_widget]
-                        else:
-                            #row_widgets = [item_widget, allergen_widget]
-                            row_widgets = [widgets.HBox([item_widget, allergen_widget], 
-                                   layout=widgets.Layout(width='30%'))]
-                        row_widgets.append(inglist_widget)
-            
-            # Ensure row_widgets has something in it
-            if len(row_widgets) == 0:
-                if allergen_widget is None:
-                    #row_widgets = [item_widget]
-                    row_widgets = [widgets.HBox([item_widget], layout=widgets.Layout(width='30%'))]
-                else:
-                    #row_widgets = [item_widget, allergen_widget]
-                    row_widgets = [widgets.HBox([item_widget, allergen_widget], layout=widgets.Layout(width='30%'))]
-                
+                    ingredients_container.append(inglist_widget)
+                      
+                    # if allergen_widget is None:
+                    #     row_widgets.append(item_widget)
+                    # else:
+                    #     row_widgets.append(item_widget)
+                    #     row_widgets.append(allergen_widget)
+                    # row_widgets.append(inglist_widget)
                 # Add empty placeholder for simple ingredients
-                row_widgets.append(widgets.Label(
-                    #layout=widgets.Layout(height=button_height, flex='1 1 auto')
-                    layout=widgets.Layout(height=button_height, flex='1 1 auto', width='70%')
+                else:
+                    ingredients_container.append(widgets.Label(
+                        layout=widgets.Layout(height=button_height, flex='1 1 auto')
+                    ))   
+            else:
+                # Add empty placeholder for simple ingredients
+                ingredients_container.append(widgets.Label(
+                    layout=widgets.Layout(height=button_height, flex='1 1 auto')
                 ))
-            
+            # Create VBox for ingredients with allergens above
+            ingredients_vbox = widgets.VBox(
+                ingredients_container,
+                layout=widgets.Layout(
+                    flex='1 1 auto',
+                    width='70%',
+                    overflow = 'hidden',
+                    padding='2px'
+                )
+            )
+            row_widgets.append(ingredients_vbox)
+
             # Create a HBox for the row and add to rows list
             border_style = '2px dotted gray'
-            
+
             highlight_row = False
             if row.get('highlight', False):
                 # Ingredient highlighting
@@ -1057,27 +1129,18 @@ class MenuDisplayWidget:
                     highlight_row = True
 
             # Use a single consistent border style for all highlighted rows
-            border_style = '2px dotted #FFEE22' if highlight_row else '2px dotted gray'
-                                    
-            # Create box layout for the row without border
+            # border_style = '2px dotted #HL_COLOR' if highlight_row else '2px dotted gray'
+            border_style = '2px dotted gray'
+                                        
+            # Apply the border to the appropriate widget
             box_layout = widgets.Layout(
                 align_items='flex-start',
                 display='flex',
-                width='100%'
+                width='100%',
+                border=border_style
             )
-            
-            # Apply the border to the appropriate widget
-            row_hbox = None
-            if inglist_widget is None or highlight_row == False:
-                # Apply border to the entire row's box layout if there's no ingredient list
-                box_layout.border = border_style
-                row_hbox = widgets.HBox(row_widgets, layout=box_layout)
-            else:
-                # Apply border just to the ingredient list widget
-                row_widgets[-1].layout.border = border_style
-                box_layout.border = '2px dotted gray'
-                row_hbox = widgets.HBox(row_widgets, layout=box_layout)
-                
+
+            row_hbox = widgets.HBox(row_widgets, layout=box_layout)
             rows.append(row_hbox)
         
         # Create a VBox for all rows
@@ -1135,9 +1198,8 @@ class MenuDisplayWidget:
             if lookup != self.search_history[-1]:
                 self.search_history.append(lookup)
                 
-    # Add this function to the MenuDisplayWidget class
     def format_allergen_text(self, allergen_text):
-        """Format allergen text with icons"""
+        """Format allergen text with icons and bold when highlighted"""
         if not allergen_text or not isinstance(allergen_text, str):
             return ""
         
@@ -1145,14 +1207,28 @@ class MenuDisplayWidget:
         allergens = [a.strip().lower() for a in allergen_text.split(',')]
         formatted_parts = []
         
+        # Get selected allergens (for highlighting/bolding)
+        selected_allergens = [cb.description.lower() for cb in self.viewer.allergen_checkboxes if cb.value] if self.viewer else []
+        
         # Add icon for each allergen if it exists in our icon dictionary
         for allergen in allergens:
             allergen_clean = allergen.lower().strip()
+            
+            # Check if this allergen should be highlighted
+            is_highlighted = allergen_clean in selected_allergens
+            
+            # Apply appropriate formatting
             if allergen_clean in allergen_icons:
-                formatted_parts.append(f"<span style='white-space: nowrap;'>{allergen_icons[allergen_clean]} {allergen.capitalize()}</span>")
-                #formatted_parts.append(f"{allergen_icons[allergen_clean]} {allergen.capitalize()}")
+                # Apply bold and italic styling for highlighted allergens
+                if is_highlighted:
+                    formatted_parts.append(f"<span style='white-space: nowrap; font-weight: bold; font-style: italic;'>{allergen_icons[allergen_clean]} {allergen.capitalize()}</span>")
+                else:
+                    formatted_parts.append(f"<span style='white-space: nowrap;'>{allergen_icons[allergen_clean]} {allergen.capitalize()}</span>")
             else:
-                formatted_parts.append(allergen.capitalize())
+                if is_highlighted:
+                    formatted_parts.append(f"<span style='font-weight: bold; font-style: italic;'>{allergen.capitalize()}</span>")
+                else:
+                    formatted_parts.append(allergen.capitalize())
         
         # Join with commas
         return ", ".join(formatted_parts)
