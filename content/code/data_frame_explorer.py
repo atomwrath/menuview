@@ -104,7 +104,10 @@ class DataFrameExplorer:
         self.dfdisplay = widgets.Output(layout={ 'overflow': 'scroll', 'border': '1px solid black'})
         self.df_widget = DataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=self.enabled_columns, 
                                          hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
-
+        
+        # Get reference to the back button
+        self.backbutton = self.df_widget.backbutton
+        
         # cost multipliers (cost 3.0x, cost 3.5x)
         cost_mult_input = widgets.FloatsInput(
             value=self.df_widget.cost_multipliers,
@@ -114,8 +117,12 @@ class DataFrameExplorer:
         cost_mult_hbox = widgets.HBox([widgets.Label(value='Cost multipliers: '), cost_mult_input])
 
         
-        topdisplay = widgets.VBox([widgets.HBox([self.searchinput, copybutton, usesaved]), self.dfdisplay], layout={'border': '2px solid green'})
-        
+        #topdisplay = widgets.VBox([widgets.HBox([self.searchinput, copybutton, usesaved]), self.dfdisplay], layout={'border': '2px solid green'})
+        # Modify top display to include back button
+        topdisplay = widgets.VBox([
+            widgets.HBox([self.backbutton, self.searchinput, copybutton, usesaved]), 
+            self.dfdisplay
+        ], layout={'border': '2px solid green'})
         
         # mentions display
         self.mdfdisplay = widgets.Output(layout={'border': '1px solid black'})        

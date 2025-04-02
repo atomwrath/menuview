@@ -390,10 +390,10 @@ class MenuDisplayWidget:
         """Handle back button click"""
         if len(self.search_history) > 1:
             self.search_history.pop()  # Remove current
-            previous = self.search_history.pop()  # Get previous
+            previous = self.search_history[-1]  # Get previous without popping it
             
             # Look up the previous item
-            self.lookup_name(previous)
+            self.setdf(previous)  # Using setdf directly instead of lookup_name to avoid modifying history
             
             # If we have a trigger, call it to ensure allergen highlighting is applied
             if self.trigger:
@@ -408,9 +408,8 @@ class MenuDisplayWidget:
         self.setdf(lookup)
         
         # Update search history
-        if self.search_history:
-            if lookup != self.search_history[-1]:
-                self.search_history.append(lookup)
+        if not self.search_history or lookup != self.search_history[-1]:
+            self.search_history.append(lookup)
                 
     def get_allergen_ingredients(self, ingredients, selected_allergens):
         """Identify ingredients that contain selected allergens"""

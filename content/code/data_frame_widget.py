@@ -26,6 +26,9 @@ class DataFrameWidget:
         self.num_cols = 0
         self.trigger = trigger
         self.last_lookup = ''
+        self.search_history = []  # Add this line for tracking history
+        self.backbutton = widgets.Button(description='Back', disabled=True)
+        self.backbutton.on_click(self.on_back_click) 
         self.cost_multipliers = [3.0, 3.5]
         # self.findtype()
         if self.df.empty:
@@ -490,8 +493,6 @@ class DataFrameWidget:
         
         # add button based on what type of dataframe we have
         if self.df_type:
-            #butlist.append(create_edit_button())
-            #self.buttons[index] = butlist[0]
             if self.df_type == 'recipe':
                 if row['item'] == 'recipe':
                     butlist.append(create_search_button())
@@ -568,7 +569,27 @@ class DataFrameWidget:
                 cell_widget.layout.visibility = 'hidden'
             items.append(cell_widget)
             
-                
+    def on_back_click(self, button):
+        """Handle back button click"""
+        if len(self.search_history) > 1:
+            self.search_history.pop()  # Remove current
+            previous = self.search_history[-1]  # Get previous without popping it
+            
+            # Store current search_history
+            saved_history = self.search_history.copy()
+            
+            # Look up the previous item without adding to history
+            self.setdf(previous)
+            
+            # Restore history
+            self.search_history = saved_history
+            
+            # Update the back button state
+            self.backbutton.disabled = len(self.search_history) <= 1
+            
+            # Update display
+            self.update_display()
+                    
     def on_duplicate_click(self, button):
         row = self.df.loc[button.tag]
         newdate = pd.to_datetime('today').strftime('%Y-%m-%d')
@@ -677,6 +698,13 @@ class DataFrameWidget:
         if self.df_type == 'recipe':
             self.cc.recipe_cost(self.df.iloc[0]['ingredient'])
             self.setdf(lookup)
+        
+        # Update search history
+        if not self.search_history or lookup != self.search_history[-1]:
+            self.search_history.append(lookup)
+        
+        # Update back button state
+        self.backbutton.disabled = len(self.search_history) <= 1
 
     def get_widget(self):
         return(self.grid)

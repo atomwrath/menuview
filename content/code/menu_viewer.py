@@ -297,7 +297,7 @@ class MenuViewer:
             )
         )
         
-        # Create ingredient input with autocomplete
+        # # Create ingredient input with autocomplete
         self.ingredient_input = widgets.Combobox(
             placeholder='Enter ingredient to highlight',
             options=tuple(), # Will be populated after loading data
@@ -306,15 +306,15 @@ class MenuViewer:
             continuous_update=True,
             layout=widgets.Layout(width='300px')
         )
-        
+
         # Add observer for text changes to implement dynamic matching
         self.ingredient_input.observe(self.on_ingredient_input_change, names='value')
         
-        # Create reset button
-        self.reset_ingredient_button = create_styled_button(
-            'reset',
-            self.on_reset_ingredient,
-            style='success'
+        # # Create add button
+        self.add_ingredient_button = create_styled_button(
+            'Add',
+            self.on_add_ingredient,
+            style='success'  # Make it clearly an "Add" button with success styling
         )
         
         # Create clear button
@@ -336,7 +336,7 @@ class MenuViewer:
         # Assemble input row
         ingredient_input_row = widgets.HBox([
             self.ingredient_input, 
-            self.reset_ingredient_button,
+            self.add_ingredient_button,
             self.clear_ingredients_button
         ])
         
@@ -360,11 +360,19 @@ class MenuViewer:
             allergen_section,
             ingredient_section
         ], layout=LAYOUTS['highlighting_container'])
-    
     def on_ingredient_input_change(self, change):
         """Handle changes to the ingredient input field and create matching buttons"""
         # Get the current input text
         input_text = change['new'].strip().lower()
+        
+        # If input exactly matches an option, treat it as an Enter key press
+        if input_text in [ing.lower() for ing in self.df_widget.simple_ingredients]:
+            # Find the exact case-matching version
+            for ing in self.df_widget.simple_ingredients:
+                if input_text == ing.lower():
+                    self.add_highlighted_ingredient(ing)
+                    self.ingredient_input.value = ""  # Clear input after adding
+                    return
         
         # Clear the matching ingredients container
         self.matching_ingredients_container.children = []
@@ -401,6 +409,32 @@ class MenuViewer:
             # Update the matching ingredients container
             self.matching_ingredients_container.children = matching_buttons
 
+    def on_add_ingredient(self, b):
+        """Handle adding an ingredient to highlight"""
+        ingredient = self.ingredient_input.value.strip()
+        
+        # Validate ingredient exists in the dataset
+        if ingredient and ingredient in self.get_valid_ingredients():
+            if ingredient not in self.highlighted_ingredients:
+                self.highlighted_ingredients.append(ingredient)
+                self.update_ingredient_chips()
+                self.apply_ingredient_highlighting()
+                self.ingredient_input.value = ""  # Clear input
+        else:
+            # Show error if ingredient doesn't exist
+            original_description = self.ingredient_input.description
+            self.ingredient_input.description = "Not found!"
+            self.ingredient_input.style = WIDGET_STYLES['warning_text']
+            
+            # Reset after 2 seconds
+            import threading
+            def reset_description():
+                self.ingredient_input.description = original_description
+                self.ingredient_input.style = {}
+            
+            timer = threading.Timer(2.0, reset_description)
+            timer.start()
+    
     def update_ingredient_chips(self):
         """Update the ingredient chips display"""
         chips = []
@@ -436,11 +470,6 @@ class MenuViewer:
                     button.style.button_color = '#f0f0f0'  # Light gray background
                     button.tooltip = f"{ingredient} (already highlighted)"
                     break
-            
-    def on_reset_ingredient(self, b):
-        """Handle reseting the ingredient input"""
-        self.ingredient_input.value = ""
-        self.ingredient_input.style = {}
     
     def on_clear_ingredients(self, b):
         """Handle clearing all highlighted ingredients"""
