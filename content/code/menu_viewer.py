@@ -439,8 +439,7 @@ class MenuViewer:
             chips.append(chip)
             
         self.ingredient_chips_container.children = chips
-    
-       self.apply_ingredient_highlighting()
+        self.apply_ingredient_highlighting()
         
     def remove_highlighted_ingredient(self, ingredient):
         """Remove an ingredient from the highlighted ingredients list"""
