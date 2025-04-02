@@ -57,7 +57,7 @@ HTML_TEMPLATES = {
     'title': "<h2>{text}</h2>",
     'heading': "<h3 style='{style}'>{text}</h3>",
     'subheading': "<h4 style='{style}'>{text}</h4>",
-    'recipe_title': "<h2><i>{text}</i></h2>",
+    'recipe_title': "<h1 style='font-variant: small-caps;'><b>{text}</b></h1>",
     'highlighted_allergen': "<span style='{style}'>{icon} {text}</span>",
     'normal_allergen': "<span style='{style}'>{icon} {text}</span>",
     'highlighted_ingredient': "<span style='{style}'>{text}</span>",
@@ -83,7 +83,7 @@ my_allergens = ['gluten', 'soy', 'sesame', 'tree-nut', 'peanut', 'dairy', 'egg',
 
 # Component Helper Functions
 
-def create_styled_button(description, on_click=None, tooltip=None, width='auto', style='', disabled=False):
+def create_styled_button(description, on_click=None, tooltip=None, width='auto', style='', styledict='', disabled=False):
     """Create a styled button with consistent layout"""
     button = widgets.Button(
         description=description,
@@ -92,6 +92,8 @@ def create_styled_button(description, on_click=None, tooltip=None, width='auto',
         tooltip=tooltip or description,
         disabled=disabled
     )
+    if styledict:
+        button.style = styledict
     if on_click:
         button.on_click(on_click)
     return button

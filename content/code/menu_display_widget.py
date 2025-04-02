@@ -230,7 +230,8 @@ class MenuDisplayWidget:
                     ingredient,
                     button_click_handler, 
                     f"View details for {ingredient}",
-                    width=f'{button_width}px'
+                    width=f'{button_width}px',
+                    styledict=dict(font_weight='bold', font_variant="small-caps",)
                 )
                 
                 # Highlight if either ingredient or allergen highlighting is active

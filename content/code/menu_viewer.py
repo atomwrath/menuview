@@ -218,7 +218,8 @@ class MenuViewer:
             button = create_styled_button(
                 menu.capitalize(), 
                 self.df_widget.make_on_click(menu),
-                style='primary'
+                style='primary',
+                styledict=dict(font_weight='bold', font_variant="small-caps")
             )
             menubuttons.append(button)
         
@@ -253,6 +254,23 @@ class MenuViewer:
                 text="By Allergen:"
             )
         )
+        # Create clear button
+        self.clear_highlights_button = create_styled_button(
+            'Clear All Highlights',
+            self.on_clear_all_highlights,
+            style='warning'
+        )
+        
+         # Title row with clear button
+        title_row = widgets.HBox([
+            self.highlighting_title,
+            self.clear_highlights_button
+        ], layout=widgets.Layout(
+            justify_content='space-between',
+            align_items='center',
+            width='100%'
+        ))
+        
         self.allergen_checkboxes = []
         self.allergen_icon_boxes = []
         
@@ -310,20 +328,6 @@ class MenuViewer:
         # Add observer for text changes to implement dynamic matching
         self.ingredient_input.observe(self.on_ingredient_input_change, names='value')
         
-        # # Create add button
-        self.add_ingredient_button = create_styled_button(
-            'Add',
-            self.on_add_ingredient,
-            style='success'  # Make it clearly an "Add" button with success styling
-        )
-        
-        # Create clear button
-        self.clear_ingredients_button = create_styled_button(
-            'Clear All',
-            self.on_clear_ingredients,
-            style='warning'
-        )
-        
         # Create container for ingredient chips
         self.ingredient_chips_container = widgets.HBox([], layout=widgets.Layout(flex_wrap='wrap'))
         
@@ -335,9 +339,8 @@ class MenuViewer:
         
         # Assemble input row
         ingredient_input_row = widgets.HBox([
-            self.ingredient_input, 
-            self.add_ingredient_button,
-            self.clear_ingredients_button
+            self.ingredient_input
+            #self.add_ingredient_button,
         ])
         
         # Assemble ingredient section
@@ -356,23 +359,15 @@ class MenuViewer:
         
         # Create the combined highlighting container with tighter spacing
         self.highlighting_container = widgets.VBox([
-            self.highlighting_title,
+            title_row,
             allergen_section,
             ingredient_section
         ], layout=LAYOUTS['highlighting_container'])
+        
     def on_ingredient_input_change(self, change):
         """Handle changes to the ingredient input field and create matching buttons"""
         # Get the current input text
         input_text = change['new'].strip().lower()
-        
-        # If input exactly matches an option, treat it as an Enter key press
-        if input_text in [ing.lower() for ing in self.df_widget.simple_ingredients]:
-            # Find the exact case-matching version
-            for ing in self.df_widget.simple_ingredients:
-                if input_text == ing.lower():
-                    self.add_highlighted_ingredient(ing)
-                    self.ingredient_input.value = ""  # Clear input after adding
-                    return
         
         # Clear the matching ingredients container
         self.matching_ingredients_container.children = []
@@ -382,25 +377,21 @@ class MenuViewer:
             return
         
         # Get valid ingredients that match the input text
-        valid_ingredients = self.df_widget.simple_ingredients
         matching_ingredients = [ing for ing in self.df_widget.simple_ingredients
-                            if input_text in ing.lower() ]
+                            if input_text in ing.lower() and ing not in self.highlighted_ingredients]
         
         # Only create buttons if there are between 1 and 10 matches (inclusive)
         if 1 <= len(matching_ingredients) <= 10:
             matching_buttons = []
             
             for ing in matching_ingredients:
-                # Check if ingredient is already highlighted
-                is_highlighted = ing in self.highlighted_ingredients
-                
                 # Create matching ingredient button with dynamic handler
                 def get_handler(ingredient):
                     return lambda b: self.add_highlighted_ingredient(ingredient)
                 
                 btn = create_matching_ingredient_button(
                     ing, 
-                    is_highlighted,
+                    False,  # Not highlighted since we filtered these out above
                     get_handler(ing)
                 )
                 
@@ -408,7 +399,8 @@ class MenuViewer:
             
             # Update the matching ingredients container
             self.matching_ingredients_container.children = matching_buttons
-
+        
+            
     def on_add_ingredient(self, b):
         """Handle adding an ingredient to highlight"""
         ingredient = self.ingredient_input.value.strip()
@@ -448,11 +440,21 @@ class MenuViewer:
             
         self.ingredient_chips_container.children = chips
     
+       self.apply_ingredient_highlighting()
+        
     def remove_highlighted_ingredient(self, ingredient):
         """Remove an ingredient from the highlighted ingredients list"""
         if ingredient in self.highlighted_ingredients:
             self.highlighted_ingredients.remove(ingredient)
             self.update_ingredient_chips()
+            
+            # Check if this ingredient should be added back to the matching ingredients 
+            # if it matches the current search
+            input_text = self.ingredient_input.value.strip().lower()
+            if input_text and len(input_text) >= 2 and input_text in ingredient.lower():
+                # Update the matching ingredients display to include this ingredient
+                self.on_ingredient_input_change({'new': input_text})
+            
             self.apply_ingredient_highlighting()
         
     def add_highlighted_ingredient(self, ingredient):
@@ -463,15 +465,12 @@ class MenuViewer:
             self.update_ingredient_chips()
             self.apply_ingredient_highlighting()
             
-            # Find and disable the button that was clicked
-            for button in self.matching_ingredients_container.children:
-                if button.description == ingredient and not button.disabled:
-                    button.disabled = True
-                    button.style.button_color = '#f0f0f0'  # Light gray background
-                    button.tooltip = f"{ingredient} (already highlighted)"
-                    break
+            # Remove this ingredient from the matching ingredients buttons
+            current_buttons = list(self.matching_ingredients_container.children)
+            updated_buttons = [btn for btn in current_buttons if btn.description != ingredient]
+            self.matching_ingredients_container.children = updated_buttons
     
-    def on_clear_ingredients(self, b):
+    def on_clear_all_highlights(self, b):
         """Handle clearing all highlighted ingredients"""
         # Update selected allergens list
         for cb in self.allergen_checkboxes:
@@ -479,8 +478,13 @@ class MenuViewer:
         # Apply the filtering
         self.highlighted_ingredients = []
         self.update_ingredient_chips()
+        # Check if there's a current search text to refresh matching ingredients
+        input_text = self.ingredient_input.value.strip().lower()
+        if input_text and len(input_text) >= 2:
+            # This will refresh the matching ingredients display
+            self.on_ingredient_input_change({'new': input_text})
         self.apply_ingredient_highlighting()
-        self.ingredient_input.value = ""
+        #self.ingredient_input.value = ""
     
     def get_valid_ingredients(self):
         """Get set of valid ingredients for highlighting"""
