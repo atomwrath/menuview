@@ -37,7 +37,7 @@ LAYOUTS = {
 
 # Widget styles
 WIDGET_STYLES = {
-    'standard_font': {'font_size': '12pt'},
+    'standard_font': {'font_size': '13pt'},
     'highlighted_text': {'font_weight': 'bold', 'font_style': 'italic'},
     'warning_text': {'text_color': 'red'},
     'normal_text': {'text_color': 'black'}

@@ -107,7 +107,7 @@ class MenuDisplayWidget:
         else:
             mycolumns = mydf.columns
             if self.df_type == 'guide':
-                mycolumns = ['description', 'brand', 'allergen']
+                mycolumns = ['nickname', 'description', 'brand', 'allergen']
             else:
                 mycolumns = [x for x in mydf.columns if x not in self.hide_columns]
             mydf = mydf[mycolumns]
@@ -137,12 +137,12 @@ class MenuDisplayWidget:
         max_lengths = {}
         for col in self.df.columns:
             try:
-                max_lengths[col] = max(self.df[col].astype(str).map(len).max(), len(col)) * 8
+                max_lengths[col] = max(self.df[col].astype(str).map(len).max(), len(col)) * 9
             except:
                 max_lengths[col] = MIN_BUTTON_WIDTH
         
         # Configure 'Back' button
-        self.backbutton.layout.width = f'{max_lengths.get("ingredient", MIN_BUTTON_WIDTH)}px'
+        self.backbutton.layout.width = f'{MIN_BUTTON_WIDTH}px'
         if len(self.search_history) > 1:
             self.backbutton.on_click(self.on_back_click)
             self.backbutton.disabled = False
@@ -171,10 +171,10 @@ class MenuDisplayWidget:
                 ingredient = row['item']
             else:
                 continue
-            
             # Calculate width needed for this ingredient text
-            text_width = len(ingredient) * 8  # Approximate pixels per character
+            text_width = len(ingredient) * 10 # Approximate pixels per character
             max_button_width = max(max_button_width, text_width)
+            
         # Add some padding to ensure no truncation
         max_button_width += 20
         # Use this width for all buttons
@@ -188,6 +188,77 @@ class MenuDisplayWidget:
             inglist_widget = None
             
             if self.df_type in ['guide', None]:
+                # we want to display the ingredient name and description
+                if self.df_type == 'guide':
+                    # For guide type, display nickname, complete allergens, and description
+                    if 'nickname' in row:
+                        ingredient_name = row['nickname']
+                        
+                        # Create ingredient title
+                        item_widget = widgets.HTML(
+                            value=HTML_TEMPLATES['recipe_title'].format(text=ingredient_name),
+                            layout=widgets.Layout(width=f'{button_width}px')
+                        )
+                        row_widgets.append(item_widget)
+                        
+                        # Create a container for description and allergens
+                        info_container = []
+                        
+                        # Get complete allergen information
+                        all_allergens = self.get_all_allergens_for_ingredient(ingredient_name)
+                        
+                        if all_allergens:
+                            # Get selected allergens from viewer
+                            selected_allergens = self.viewer.selected_allergens if self.viewer else []
+                            
+                            # Format the allergen text with icons
+                            formatted_allergen = format_allergen_text(all_allergens, selected_allergens)
+                            
+                            # Create allergen widget
+                            allergen_widget = widgets.HTML(
+                                value=f"<strong>Allergens:</strong> {formatted_allergen}",
+                                layout=widgets.Layout(
+                                    width='auto',
+                                    min_width='150px',
+                                    margin='0 10px',
+                                    padding='5px 0',
+                                    height='auto'
+                                )
+                            )
+                            info_container.append(allergen_widget)
+                        
+                        # Add description if it exists
+                        description = row.get('description', '')
+                        if description:
+                            description_widget = widgets.HTML(
+                                value=f"<em>{description}</em>",
+                                layout=widgets.Layout(
+                                    height='auto',
+                                    min_height=BUTTON_HEIGHT,
+                                    padding='5px 0',
+                                    flex='1 1 auto'
+                                )
+                            )
+                            info_container.append(description_widget)
+                            
+                        # If neither allergen nor description, add empty placeholder
+                        if not info_container:
+                            info_container.append(widgets.Label(
+                                layout=widgets.Layout(height=BUTTON_HEIGHT, flex='1 1 auto')
+                            ))
+                        
+                        # Create VBox for description with allergens above
+                        info_vbox = widgets.VBox(
+                            info_container,
+                            layout=LAYOUTS['ingredient_container']
+                        )
+                        row_widgets.append(info_vbox)
+                        
+                        # Add the row to rows
+                        row_hbox = widgets.HBox(row_widgets, layout=LAYOUTS['row'])
+                        rows.append(row_hbox)
+                    # No continue needed - we've processed the only guide row
+                    break
                 continue  # Skip processing for 'guide' and None types
             
             if self.df_type == 'recipe':
@@ -322,16 +393,48 @@ class MenuDisplayWidget:
                         layout=LAYOUTS['ingredient_list']
                     )
                     ingredients_container.append(inglist_widget)
-                # Add empty placeholder for simple ingredients
+                    
                 else:
+                    # For simple ingredients, get and display the description
+                    description = self.get_ingredient_description(clean_ingredient)
+                    if description:
+                        description_widget = widgets.HTML(
+                            value=f"<em>{description}</em>",
+                            layout=widgets.Layout(
+                                height='auto',
+                                min_height=BUTTON_HEIGHT,
+                                flex='1 1 auto'
+                            )
+                        )
+                        ingredients_container.append(description_widget)
+                    else:
+                        # If no description, add empty placeholder
+                        ingredients_container.append(widgets.Label(
+                            layout=widgets.Layout(height=BUTTON_HEIGHT, flex='1 1 auto')
+                        )) 
+            else:
+                mying = clean_ingredient
+                if self.cc.is_ingredient(clean_ingredient):
+                    pass
+                elif len(theing := self.cc.get_all_children(clean_ingredient, set())) == 1:
+                    mying = theing.pop()
+                # For simple ingredients, get and display the description
+                description = self.get_ingredient_description(mying)
+                if description:
+                    description_widget = widgets.HTML(
+                        value=f"<em>{description}</em>",
+                        layout=widgets.Layout(
+                            height='auto',
+                            min_height=BUTTON_HEIGHT,
+                            flex='1 1 auto'
+                        )
+                    )
+                    ingredients_container.append(description_widget)
+                else:
+                    # If no description, add empty placeholder
                     ingredients_container.append(widgets.Label(
                         layout=widgets.Layout(height=BUTTON_HEIGHT, flex='1 1 auto')
-                    ))   
-            else:
-                # Add empty placeholder for simple ingredients
-                ingredients_container.append(widgets.Label(
-                    layout=widgets.Layout(height=BUTTON_HEIGHT, flex='1 1 auto')
-                ))
+                    ))
             # Create VBox for ingredients with allergens above
             ingredients_vbox = widgets.VBox(
                 ingredients_container,
@@ -429,3 +532,49 @@ class MenuDisplayWidget:
                 allergen_ingredients.add(ing)
             
         return allergen_ingredients
+    
+    def get_all_allergens_for_ingredient(self, ingredient_name):
+        """Collect all allergens for an ingredient across all entries in the guide"""
+        all_allergens = set()
+        
+        if self.cc and hasattr(self.cc, 'uni_g'):
+            # Get all rows for this ingredient
+            ingdf = self.cc.uni_g[self.cc.uni_g['nickname'] == ingredient_name]
+            
+            if not ingdf.empty and 'allergen' in ingdf.columns:
+                # Get all non-null allergen values
+                allergens = ingdf['allergen'].dropna().unique()
+                
+                # Process each allergen string
+                for allergen in allergens:
+                    if isinstance(allergen, str):
+                        # Split, clean and add each allergen
+                        for a in allergen.replace(' ', '').split(','):
+                            if a:  # Only add non-empty values
+                                all_allergens.add(a)
+                                
+        # Return as a comma-separated string
+        return ", ".join(sorted(all_allergens)) if all_allergens else ""
+    
+    def get_ingredient_description(self, ingredient):
+        """Get the most recent description for an ingredient from the unified guide"""
+        if not self.cc or 'nickname' not in self.cc.uni_g.columns:
+            return ""
+        
+        # Get all rows where nickname matches the ingredient
+        matching_rows = self.cc.uni_g[self.cc.uni_g['nickname'] == ingredient]
+        
+        if matching_rows.empty:
+            return ""
+        
+        # Sort by date (most recent first) if date column exists
+        if 'date' in matching_rows.columns:
+            try:
+                matching_rows = matching_rows.sort_values(by='date', ascending=False)
+            except:
+                pass  # If sorting fails, continue with unsorted rows
+        
+        # Get the most recent description
+        description = matching_rows.iloc[0].get('description', "")
+        
+        return str(description) if description else ""

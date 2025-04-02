@@ -177,7 +177,7 @@ class MenuViewer:
             onlyrecipes = ingrs.difference(nicks)
             self.searchinput = widgets.Combobox(
                 placeholder='ingredient/item',
-                options=tuple(onlyrecipes),
+                options=tuple(sorted(onlyrecipes)),
                 description='Search:',
                 ensure_option=False,
                 disabled=False,
@@ -372,36 +372,53 @@ class MenuViewer:
         # Clear the matching ingredients container
         self.matching_ingredients_container.children = []
         
-        # If input is empty or too short, don't show any matches
+        # # If input is empty or too short, don't show any matches
         if not input_text or len(input_text) < 2:
             return
         
-        # Get valid ingredients that match the input text
-        matching_ingredients = [ing for ing in self.df_widget.simple_ingredients
-                            if input_text in ing.lower() and ing not in self.highlighted_ingredients]
-        
+        # # Get valid ingredients that match the input text
+        # matching_ingredients = [ing for ing in self.df_widget.simple_ingredients
+        #                     if input_text in ing.lower() and ing not in self.highlighted_ingredients]
+        # Get valid ingredients that match the input text at word boundaries
+        matching_ingredients = []
+        for ing in self.df_widget.simple_ingredients:
+            ing_lower = ing.lower()
+            # Check if the input matches the beginning of the ingredient name
+            if ing_lower.startswith(input_text):
+                matching_ingredients.append(ing)
+            else:
+                # Check if the input matches the beginning of any word in the ingredient name
+                words = ing_lower.split()
+                if any(word.startswith(input_text) for word in words):
+                    matching_ingredients.append(ing)
+                    
         # Only create buttons if there are between 1 and 10 matches (inclusive)
         if 1 <= len(matching_ingredients) <= 10:
             matching_buttons = []
-            
-            for ing in matching_ingredients:
-                # Create matching ingredient button with dynamic handler
-                def get_handler(ingredient):
-                    return lambda b: self.add_highlighted_ingredient(ingredient)
-                
-                btn = create_matching_ingredient_button(
-                    ing, 
-                    False,  # Not highlighted since we filtered these out above
-                    get_handler(ing)
-                )
-                
-                matching_buttons.append(btn)
+            if len(matching_ingredients) == 1 and input_text == matching_ingredients[0]:
+                #self.add_highlighted_ingredient(matching_ingredients[0])
+                self.on_add_ingredient()
+                return
+            else:
+                matching_ingredients.sort()
+                for ing in matching_ingredients:
+                    # Create matching ingredient button with dynamic handler
+                    def get_handler(ingredient):
+                        return lambda b: self.add_highlighted_ingredient(ingredient)
+                    
+                    btn = create_matching_ingredient_button(
+                        ing, 
+                        False,  # Not highlighted since we filtered these out above
+                        get_handler(ing)
+                    )
+                    
+                    matching_buttons.append(btn)
             
             # Update the matching ingredients container
             self.matching_ingredients_container.children = matching_buttons
         
             
-    def on_add_ingredient(self, b):
+    def on_add_ingredient(self, b=None):
         """Handle adding an ingredient to highlight"""
         ingredient = self.ingredient_input.value.strip()
         
@@ -527,12 +544,12 @@ class MenuViewer:
             nicks = set(self.cc.uni_g['nickname'].dropna().unique())
             ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
             self.allvals = nicks.union(ingrs)
-            self.searchinput.options = tuple(ingrs.difference(nicks))
+            self.searchinput.options = tuple(sorted(ingrs.difference(nicks)))
             self.df_widget.all_ingredients = self.allvals
             self.df_widget.simple_ingredients = nicks.intersection(ingrs)
             
             # Update ingredient input options
-            self.ingredient_input.options = tuple(nicks.intersection(ingrs))
+            self.ingredient_input.options = tuple(sorted(nicks.intersection(ingrs)))
     
     def update_search(self, change):
         """Handle search input changes"""

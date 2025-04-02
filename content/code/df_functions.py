@@ -7,9 +7,6 @@ from datetime import datetime
 
 # globals...
 ureg = UnitRegistry()
-# Define aliases to avoid the centisecond issue
-ureg.define('count = []')  # Define count as dimensionless
-ureg.define('ct = count')  # Explicitly define ct as count, overriding the centisecond
 Q_ = ureg.Quantity
 
 printon = False
