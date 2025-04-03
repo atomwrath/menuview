@@ -16,7 +16,10 @@ class DataFrameExplorer:
         self.defcolor = widgets.Text().style.text_color
         self.fontstyle = {'font_size': '12pt'}
         self.excel_filename = 'amc_menu_database.xlsx'
-        self.enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'saved cost', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number']
+        
+        # Store original enabled columns for switching between modes
+        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'saved cost', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number']
+        self.enabled_columns = self.all_enabled_columns.copy()
         self.hide_columns = ['note', 'conversion', 'saved cost', 'equ quant', 'menu price']
         self.cc = cc
         self.cost_select_method = {'recent': pick_recent_cost, 
@@ -24,13 +27,15 @@ class DataFrameExplorer:
                                 'minimum': pick_min_cost,
                                 'all': lambda x: x}
         
+        # Track current mode (edit/view)
+        self.edit_mode = True
 
         # top utility displays
         cost_chooser = widgets.Text(value='menucost.xlsx')
         cost_button = widgets.Button(description='write cost excel')
         cost_button.on_click(lambda x: self.cc.ordered_xlsx(str(cost_chooser.value), cost_multipliers=self.df_widget.cost_multipliers))
         self.cost_display = widgets.HBox([widgets.Label(value='cost export filename'), cost_chooser, cost_button])
-                             
+                            
         database_chooser = widgets.Text(value=self.excel_filename)
         loadbutton = widgets.Button(description=f'reload database')
         loadbutton.on_click(lambda x: self.reload_database(database_chooser.value))
@@ -67,6 +72,15 @@ class DataFrameExplorer:
         copybutton = widgets.Button(description=f'copy sheet')
         copybutton.on_click(lambda x: self.df_widget.df.to_clipboard())
 
+        # Add edit/view mode toggle button with larger size for better text fit
+        self.mode_toggle_button = widgets.Button(
+            description='Edit Mode',
+            button_style='warning',
+            style={'font_weight': 'bold', 'font_variant': 'small-caps'},
+            layout=widgets.Layout(width='auto', height='33px')
+        )
+        self.mode_toggle_button.on_click(self.toggle_edit_mode)
+
         hide_toggles = [widgets.Label(value='Show/Hide columns:', layout=widgets.Layout(width='40%'))]
         for col in self.hide_columns:
             # use saved cost check box
@@ -99,11 +113,10 @@ class DataFrameExplorer:
         )
         cost_selection_widget.observe(self.cost_selector, names='value')
         
-
         # composition
         self.dfdisplay = widgets.Output(layout={ 'overflow': 'scroll', 'border': '1px solid black'})
         self.df_widget = DataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=self.enabled_columns, 
-                                         hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
+                                        hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
         
         # Get reference to the back button
         self.backbutton = self.df_widget.backbutton
@@ -116,10 +129,33 @@ class DataFrameExplorer:
         cost_mult_input.observe(self.set_cost_multipliers, names='value')
         cost_mult_hbox = widgets.HBox([widgets.Label(value='Cost multipliers: '), cost_mult_input])
 
+        # Add menu buttons
+        menulist = ['breakfast', 'lunch', 'dinner', 'desserts']
+        menubuttons = []
+        for menu in menulist:
+            button = widgets.Button(
+                description=menu.capitalize(),
+                button_style='primary',
+                style={'font_weight': 'bold', 'font_variant': 'small-caps'},
+                layout=widgets.Layout(width='auto', height='33px')
+            )
+            # Create a closure to handle button clicks
+            def make_menu_handler(menu_name):
+                return lambda b: self.trigger_update(menu_name)
+            button.on_click(make_menu_handler(menu))
+            menubuttons.append(button)
         
-        #topdisplay = widgets.VBox([widgets.HBox([self.searchinput, copybutton, usesaved]), self.dfdisplay], layout={'border': '2px solid green'})
-        # Modify top display to include back button
+        # Add the edit/view mode toggle button to the menu button row
+        menubuttons.append(self.mode_toggle_button)
+        
+        self.menubutton_hbox = widgets.HBox(
+            menubuttons, 
+            layout=widgets.Layout(width='auto', margin='5px 0')
+        )
+        
+        # Modify top display to include menu buttons and back button
         topdisplay = widgets.VBox([
+            self.menubutton_hbox,
             widgets.HBox([self.backbutton, self.searchinput, copybutton, usesaved]), 
             self.dfdisplay
         ], layout={'border': '2px solid green'})
@@ -128,7 +164,7 @@ class DataFrameExplorer:
         self.mdfdisplay = widgets.Output(layout={'border': '1px solid black'})        
         self.bottom_label = widgets.Label(value='items containing...', style=self.fontstyle)
         self.mdf_widget = DisplayDataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=[], 
-                                         hide_columns=self.hide_columns, cc=self.cc, output=self.mdfdisplay, trigger=self.trigger_mentions)
+                                        hide_columns=self.hide_columns, cc=self.cc, output=self.mdfdisplay, trigger=self.trigger_mentions)
         bottom_display = widgets.VBox([self.bottom_label, self.mdfdisplay], layout={'border': '2px solid blue'})
         
         # Create tools section containing recipe and ingredient creation
@@ -136,6 +172,14 @@ class DataFrameExplorer:
             addrecipe_hbox, 
             addingredient_hbox
         ], layout={'border': '1px solid gray', 'padding': '5px', 'margin': '5px'})
+        
+        # Track editor widgets for enabling/disabling in view mode
+        # We're now only including the recipe/ingredient creation tools and database management tools
+        self.editor_widgets = {
+            'recipe_tools': tools_section,
+            'database_tools': self.database_display,
+            'cost_tools': self.cost_display
+        }
         
         # display composition
         # combined display
@@ -149,7 +193,215 @@ class DataFrameExplorer:
             topdisplay, 
             bottom_display
         ])
+    # def __init__(self, cc=CostCalculator()):
+    #     self.df = pd.DataFrame()
+    #     self.mentiondf = pd.DataFrame()
+    #     self.allvals = set()
+    #     if 'nickname' in cc.uni_g.columns:
+    #         nicks = set(cc.uni_g['nickname'].dropna().unique())
+    #         ingrs = set(cc.costdf['ingredient'].dropna().unique())
+    #         self.allvals = nicks.union(ingrs)
+    #     self.defcolor = widgets.Text().style.text_color
+    #     self.fontstyle = {'font_size': '12pt'}
+    #     self.excel_filename = 'amc_menu_database.xlsx'
+    #     self.enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'saved cost', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number']
+    #     self.hide_columns = ['note', 'conversion', 'saved cost', 'equ quant', 'menu price']
+    #     self.cc = cc
+    #     self.cost_select_method = {'recent': pick_recent_cost, 
+    #                             'maximum': pick_max_cost, 
+    #                             'minimum': pick_min_cost,
+    #                             'all': lambda x: x}
         
+
+    #     # top utility displays
+    #     cost_chooser = widgets.Text(value='menucost.xlsx')
+    #     cost_button = widgets.Button(description='write cost excel')
+    #     cost_button.on_click(lambda x: self.cc.ordered_xlsx(str(cost_chooser.value), cost_multipliers=self.df_widget.cost_multipliers))
+    #     self.cost_display = widgets.HBox([widgets.Label(value='cost export filename'), cost_chooser, cost_button])
+                             
+    #     database_chooser = widgets.Text(value=self.excel_filename)
+    #     loadbutton = widgets.Button(description=f'reload database')
+    #     loadbutton.on_click(lambda x: self.reload_database(database_chooser.value))
+    #     writebutton = widgets.Button(description='write database')
+    #     writebutton.on_click(lambda x: self.cc.write_cc(f"{database_chooser.value}"))
+    #     self.database_display = widgets.HBox([widgets.Label(value='Database filename:'), database_chooser, loadbutton, writebutton])
+
+    #     # add recipe
+    #     addrecipe_text = widgets.Text(value='recipe name')
+    #     addrecipe_button = widgets.Button(description='create recipe')
+    #     addrecipe_button.on_click(lambda x: self.create_recipe(addrecipe_text))
+    #     addrecipe_hbox = widgets.HBox([addrecipe_text, addrecipe_button])
+        
+    #     # add ingredient
+    #     addingredient_text = widgets.Text(value='ingredient name')
+    #     addingredient_button = widgets.Button(description='create ingredient')
+    #     addingredient_button.on_click(lambda x: self.create_ingredient(addingredient_text))
+    #     addingredient_hbox = widgets.HBox([addingredient_text, addingredient_button])
+
+    #     # main display
+
+    #     # search combobox
+    #     self.searchinput = widgets.Combobox(
+    #         placeholder='ingredient/item',
+    #         options=tuple(self.allvals),
+    #         description='Search:',
+    #         ensure_option=False,
+    #         disabled=False,
+    #         style=self.fontstyle
+    #     )        
+    #     self.searchinput.observe(self.update_search, names='value')
+
+    #     # copy current display to clipboard
+    #     copybutton = widgets.Button(description=f'copy sheet')
+    #     copybutton.on_click(lambda x: self.df_widget.df.to_clipboard())
+
+    #     hide_toggles = [widgets.Label(value='Show/Hide columns:', layout=widgets.Layout(width='40%'))]
+    #     for col in self.hide_columns:
+    #         # use saved cost check box
+    #         hide_quant = widgets.Checkbox(
+    #             value=False,
+    #             description=col,
+    #             disabled=False,
+    #             indent=False
+    #         )
+    #         hide_quant.observe(lambda change, col=col: self.hide_col(change, col), 'value')
+    #         hide_toggles.append(hide_quant)
+            
+    #     self.hide_toggleVBox = widgets.HBox(hide_toggles)
+
+    #     # use saved cost check box
+    #     usesaved = widgets.Checkbox(
+    #         value=False,
+    #         description='Use saved cost',
+    #         disabled=False,
+    #         indent=False
+    #     )
+    #     usesaved.observe(self.usesaved, names='value')
+
+    #     # set cost_picker
+    #     cost_selection_widget = widgets.ToggleButtons(
+    #         options=list(self.cost_select_method.keys()),
+    #         description='Cost selection method:',
+    #         disabled=False,
+    #         button_style='', # 'success', 'info', 'warning', 'danger' or '',
+    #     )
+    #     cost_selection_widget.observe(self.cost_selector, names='value')
+        
+
+    #     # composition
+    #     self.dfdisplay = widgets.Output(layout={ 'overflow': 'scroll', 'border': '1px solid black'})
+    #     self.df_widget = DataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=self.enabled_columns, 
+    #                                      hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
+        
+    #     # Get reference to the back button
+    #     self.backbutton = self.df_widget.backbutton
+        
+    #     # cost multipliers (cost 3.0x, cost 3.5x)
+    #     cost_mult_input = widgets.FloatsInput(
+    #         value=self.df_widget.cost_multipliers,
+    #         format = '.2f'
+    #     )
+    #     cost_mult_input.observe(self.set_cost_multipliers, names='value')
+    #     cost_mult_hbox = widgets.HBox([widgets.Label(value='Cost multipliers: '), cost_mult_input])
+
+    #     # Add menu buttons
+    #     menulist = ['breakfast', 'lunch', 'dinner', 'desserts']
+    #     menubuttons = []
+    #     for menu in menulist:
+    #         button = widgets.Button(
+    #             description=menu.capitalize(),
+    #             button_style='primary',
+    #             style={'font_weight': 'bold', 'font_variant': 'small-caps'},
+    #             layout=widgets.Layout(width='auto', height='33px')
+    #         )
+    #         # Create a closure to handle button clicks
+    #         def make_menu_handler(menu_name):
+    #             return lambda b: self.trigger_update(menu_name)
+    #         button.on_click(make_menu_handler(menu))
+    #         menubuttons.append(button)
+        
+    #     self.menubutton_hbox = widgets.HBox(
+    #         menubuttons, 
+    #         layout=widgets.Layout(width='auto', margin='5px 0')
+    #     )
+        
+    #     # Modify top display to include menu buttons and back button
+    #     topdisplay = widgets.VBox([
+    #         self.menubutton_hbox,
+    #         widgets.HBox([self.backbutton, self.searchinput, copybutton, usesaved]), 
+    #         self.dfdisplay
+    #     ], layout={'border': '2px solid green'})
+        
+    #     #topdisplay = widgets.VBox([widgets.HBox([self.searchinput, copybutton, usesaved]), self.dfdisplay], layout={'border': '2px solid green'})
+    #     # Modify top display to include back button
+    #     # topdisplay = widgets.VBox([
+    #     #     widgets.HBox([self.backbutton, self.searchinput, copybutton, usesaved]), 
+    #     #     self.dfdisplay
+    #     # ], layout={'border': '2px solid green'})
+        
+    #     # mentions display
+    #     self.mdfdisplay = widgets.Output(layout={'border': '1px solid black'})        
+    #     self.bottom_label = widgets.Label(value='items containing...', style=self.fontstyle)
+    #     self.mdf_widget = DisplayDataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=[], 
+    #                                      hide_columns=self.hide_columns, cc=self.cc, output=self.mdfdisplay, trigger=self.trigger_mentions)
+    #     bottom_display = widgets.VBox([self.bottom_label, self.mdfdisplay], layout={'border': '2px solid blue'})
+        
+    #     # Create tools section containing recipe and ingredient creation
+    #     tools_section = widgets.VBox([
+    #         addrecipe_hbox, 
+    #         addingredient_hbox
+    #     ], layout={'border': '1px solid gray', 'padding': '5px', 'margin': '5px'})
+        
+    #     # display composition
+    #     # combined display
+    #     self.vbox = widgets.VBox([
+    #         self.database_display, 
+    #         self.cost_display, 
+    #         tools_section,  # Now includes both recipe and ingredient creation
+    #         self.hide_toggleVBox, 
+    #         cost_selection_widget, 
+    #         cost_mult_hbox, 
+    #         topdisplay, 
+    #         bottom_display
+    #     ])
+        
+    def toggle_edit_mode(self, b=None):
+        """Toggle between edit mode and view mode"""
+        # Toggle the current mode
+        self.edit_mode = not self.edit_mode
+        
+        if self.edit_mode:
+            # Switching to edit mode
+            self.mode_toggle_button.description = 'Edit Mode'
+            self.mode_toggle_button.button_style = 'warning'
+            
+            # Enable editing
+            self.enabled_columns = self.all_enabled_columns.copy()
+            
+            # Show editor widgets
+            for widget in self.editor_widgets.values():
+                widget.layout.display = 'flex'
+                
+        else:
+            # Switching to view mode
+            self.mode_toggle_button.description = 'View Mode'
+            self.mode_toggle_button.button_style = 'info'
+            
+            # Disable editing
+            self.enabled_columns = []
+            
+            # Hide editor widgets
+            for widget in self.editor_widgets.values():
+                widget.layout.display = 'none'
+        
+        # Update the DataFrameWidget with new enabled_columns
+        self.df_widget.enabled_columns = self.enabled_columns
+        
+        # Reload the current view to apply the changes
+        if self.df_widget.last_lookup:
+            self.df_widget.lookup_name(self.df_widget.last_lookup)
+            self.df_widget.update_display()
+    
     def trigger_mentions(self, iname):
         # reload current search in no iname
         if iname == None:
@@ -209,12 +461,25 @@ class DataFrameExplorer:
         self.df_widget.lookup_name(self.df_widget.last_lookup)
         self.df_widget.update_display()
         
+    # def update_mentions(self, iname):
+    #     self.mdf_widget.search_name(iname)
+    #     if self.mdf_widget.df.empty:
+    #         return
+    #     self.mdf_widget.update_display()
+    #     self.bottom_label.value = f"items containing {iname}:"
     def update_mentions(self, iname):
+        """Update the mentions display for the current ingredient/item"""
         self.mdf_widget.search_name(iname)
+        
         if self.mdf_widget.df.empty:
-            return
-        self.mdf_widget.update_display()
-        self.bottom_label.value = f"items containing {iname}:"
+            # Create a message when no mentions are found
+            with self.mdfdisplay:
+                self.mdfdisplay.clear_output(wait=True)
+                print(f"{iname} does not appear in any recipe")
+            self.bottom_label.value = f"items containing {iname}:"
+        else:
+            self.mdf_widget.update_display()
+            self.bottom_label.value = f"items containing {iname}:"
     
     def reload_database(self, database):
         self.cc.read_from_xlsx(database)

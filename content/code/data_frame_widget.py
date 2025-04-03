@@ -687,7 +687,8 @@ class DataFrameWidget:
             if self.df.empty:
                 return
         else:
-            print("my type: ", self.df_type)
+            pass
+            #print("my type: ", self.df_type)
         self.update_column_width()
         
                 

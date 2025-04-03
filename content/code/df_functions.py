@@ -137,34 +137,27 @@ class CostCalculator:
         '''
         self.costdf.loc[(self.costdf['item'] == 'recipe') & (self.costdf['ingredient'] == inick),
             column_name] = value
-
+        
     def set_item_ingredient(self, item, ingredient, column_name, value):
         ''' set a value for specified column (column_name) for (unique) entry
             which matches 'item' == item, 'ingredient' == ingredient
         '''
+        # If the column is 'cost' or contains 'cost' in its name, ensure it's float type
+        if column_name == 'cost' or 'cost' in column_name.lower():
+            # First convert the column to float if it's not already
+            if self.costdf[column_name].dtype != 'float64':
+                self.costdf[column_name] = self.costdf[column_name].astype('float64')
+            
+            # Ensure the value is float
+            if not isinstance(value, float) and value is not None:
+                try:
+                    value = float(value)
+                except (ValueError, TypeError):
+                    print(f"Warning: Could not convert value '{value}' to float for column '{column_name}'")
+        
+        # Now set the value
         self.costdf.loc[(self.costdf['item'] == item) & (self.costdf['ingredient'] == ingredient),
             column_name] = value
-        
-        def set_item_ingredient(self, item, ingredient, column_name, value):
-            ''' set a value for specified column (column_name) for (unique) entry
-                which matches 'item' == item, 'ingredient' == ingredient
-            '''
-            # If the column is 'cost' or contains 'cost' in its name, ensure it's float type
-            if column_name == 'cost' or 'cost' in column_name.lower():
-                # First convert the column to float if it's not already
-                if self.costdf[column_name].dtype != 'float64':
-                    self.costdf[column_name] = self.costdf[column_name].astype('float64')
-                
-                # Ensure the value is float
-                if not isinstance(value, float) and value is not None:
-                    try:
-                        value = float(value)
-                    except (ValueError, TypeError):
-                        print(f"Warning: Could not convert value '{value}' to float for column '{column_name}'")
-            
-            # Now set the value
-            self.costdf.loc[(self.costdf['item'] == item) & (self.costdf['ingredient'] == ingredient),
-                column_name] = value
 
     def get_simple_ingredient_cost(self, inick, iquant):
         ''' get cost from the price guide, using weighted average if possible '''
@@ -261,7 +254,6 @@ class CostCalculator:
                     else:
                         if isinstance(recipe_entry['conversion'], str):
                             conv = parse_unit_conversion(recipe_entry['conversion'])
-                            print(conv)
                             cost, myconv = quantity_cost_and_conv(
                                 recipe_cost/recipe_quant, myquant, conv)
                             if (cost < 0):

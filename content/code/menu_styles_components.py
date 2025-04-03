@@ -30,7 +30,7 @@ LAYOUTS = {
     'allergen_chips': widgets.Layout(display='flex', flex_flow='row wrap', width='100%', padding='10px'),
     'allergen_container': widgets.Layout(margin='0'),
     'ingredient_container_box': widgets.Layout(margin='0'),
-    'ingredient_chip': widgets.Layout(border=f'1px solid {HIGHLIGHT_COLOR}', border_radius='15px',
+    'ingredient_chip': widgets.Layout(border=f'2px solid {HIGHLIGHT_COLOR}', border_radius='15px',
                                    padding='2px 10px', margin='3px', background_color='#e8f4f8'),
     'matching_ingredients': widgets.Layout(display='flex', flex_flow='row wrap', width='100%', margin='5px 0')
 }
@@ -162,7 +162,7 @@ def create_ingredient_chip(ingredient, on_remove):
     # Create remove button
     remove_button = widgets.Button(
         description='×',
-        button_style='',
+        button_style='warning',
         layout=widgets.Layout(width='24px', height='24px', padding='0px')
     )
     
