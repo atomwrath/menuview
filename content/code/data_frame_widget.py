@@ -2,7 +2,8 @@ import pandas as pd
 import ipywidgets as widgets
 import numpy as np
 from IPython.display import display, clear_output
-from df_functions import *
+from costcalulator import CostCalculator
+from utils import *
 
 class DataFrameWidget:
     ''' ipywidgets based interactive interface for pandas

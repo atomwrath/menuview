@@ -2,7 +2,7 @@ import pandas as pd
 import ipywidgets as widgets
 import numpy as np
 from IPython.display import display
-from df_functions import *
+from costcalulator import CostCalculator
 from data_frame_explorer import DataFrameExplorer
 
 def main():

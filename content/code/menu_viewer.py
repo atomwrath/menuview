@@ -3,7 +3,7 @@ import ipywidgets as widgets
 from IPython.display import display, clear_output, HTML
 import os
 import io
-from df_functions import *
+from costcalulator import CostCalculator
 from utils import get_xlsx_files
 from menu_styles_components import *
 from menu_display_widget import MenuDisplayWidget

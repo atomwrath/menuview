@@ -1,7 +1,8 @@
 import pandas as pd
 import ipywidgets as widgets
 from IPython.display import display, clear_output, HTML
-from df_functions import *
+from costcalulator import CostCalculator
+from utils import reorder_columns
 from menu_styles_components import *
 
 class MenuDisplayWidget:
