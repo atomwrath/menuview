@@ -121,6 +121,7 @@ class DataFrameExplorer:
         
         # Get reference to the back button
         self.backbutton = self.df_widget.backbutton
+        self.progress_bar = self.df_widget.progress_bar
         
         # cost multipliers (cost 3.0x, cost 3.5x)
         cost_mult_input = widgets.FloatsInput(
@@ -148,6 +149,7 @@ class DataFrameExplorer:
         
         # Add the edit/view mode toggle button to the menu button row
         menubuttons.append(self.mode_toggle_button)
+        menubuttons.append(self.progress_bar)
         
         self.menubutton_hbox = widgets.HBox(
             menubuttons, 

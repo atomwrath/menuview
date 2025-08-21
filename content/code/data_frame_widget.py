@@ -31,6 +31,16 @@ class DataFrameWidget:
         self.backbutton = widgets.Button(description='Back', disabled=True)
         self.backbutton.on_click(self.on_back_click) 
         self.cost_multipliers = [3.0, 3.5]
+        
+        # Add progress bar for loading
+        self.progress_bar = widgets.IntProgress(
+            value=0,
+            min=0,
+            max=100,
+            description='Loading:',
+            style={'description_width': 'initial'},
+            layout=widgets.Layout(width='200px', visibility='hidden')
+        )
         # self.findtype()
         if self.df.empty:
             self.df_type = None
@@ -97,12 +107,34 @@ class DataFrameWidget:
             if self.df_type == 'recipe':
                 self.column_width['item'] = 5 + 8 * len('recipe for:')
         
+    # def update_display(self):
+    #     self.grid.disabled = True
+    #     self.grid = self._create_grid()
+    #     with self.output:
+    #         self.output.clear_output(wait=True)
+    #         display(self.grid)
+
+    #     if (self.trigger != None):
+    #         if (self.df_type == 'recipe'):
+    #             self.trigger(self.df.iloc[0]['ingredient'])
+    #         elif (self.df_type == 'guide'):
+    #             self.trigger(self.df.loc[0]['nickname'])
+    # Modify update_display method to show progress
     def update_display(self):
+        self.progress_bar.layout.visibility = 'visible'
+        self.progress_bar.value = 0
+        
         self.grid.disabled = True
+        self.progress_bar.value = 20
         self.grid = self._create_grid()
+        self.progress_bar.value = 90
+        
         with self.output:
             self.output.clear_output(wait=True)
             display(self.grid)
+        
+        self.progress_bar.value = 100
+        self.progress_bar.layout.visibility = 'hidden'
 
         if (self.trigger != None):
             if (self.df_type == 'recipe'):
@@ -131,16 +163,53 @@ class DataFrameWidget:
             self.df_type = None
         return self.df_type
         
+    # def _create_grid(self):
+    #     # Create a list to store the widgets
+    #     items = []
+        
+    #     self.num_cols = len(self.df.columns) + 1 # extra one for button
+    #     # Create a GridBox to display the widgets
+
+    #     # Setup column names
+    #     # add blank label in place of a button
+        
+    #     for i in range(self.num_cols - len(self.df.columns)):
+    #         items.append(widgets.Label(value='', layout=self.getlayout()))
+        
+    #     # add column labels for each column at top of interface
+    #     for col in self.df.columns:
+    #         items.append(widgets.Label(value=col, layout=self.getlayout(col)))
+            
+    #     # if we have a recipe df, add row at end for ability to add to ingredient to recipe
+    #     if self.df_type == 'recipe':
+    #         new_row = pd.DataFrame({column: [''] for column in self.df.columns})
+    #         # set blank row up as a member of the recipe
+    #         new_row['item'] = self.df.iloc[0]['ingredient']
+    #         self.df = pd.concat([self.df, new_row], ignore_index=True)
+
+    #     # Create interface for each row of the DataFrame
+    #     for index, row in self.df.iterrows():
+    #         self.create_row(items, index, row)
+        
+    #     grid = widgets.GridBox(items, layout=widgets.Layout(grid_template_columns=f"repeat({self.num_cols}, {self.width})"))
+    #     # set the width of the first column to 100 pixels
+    #     grid.layout.grid_template_columns = f"{self.width} {'px '.join([str(self.column_width[x]) for x in self.df.columns])}px"
+    #     return grid
+    
+    # Modify _create_grid method to update the progress bar
     def _create_grid(self):
+        # Show progress bar
+        self.progress_bar.layout.visibility = 'visible'
+        self.progress_bar.value = 0
+        
         # Create a list to store the widgets
         items = []
         
         self.num_cols = len(self.df.columns) + 1 # extra one for button
-        # Create a GridBox to display the widgets
-
+        total_rows = len(self.df)
+        
         # Setup column names
         # add blank label in place of a button
-        
         for i in range(self.num_cols - len(self.df.columns)):
             items.append(widgets.Label(value='', layout=self.getlayout()))
         
@@ -148,20 +217,36 @@ class DataFrameWidget:
         for col in self.df.columns:
             items.append(widgets.Label(value=col, layout=self.getlayout(col)))
             
+        # Update progress
+        self.progress_bar.value = 5
+            
         # if we have a recipe df, add row at end for ability to add to ingredient to recipe
         if self.df_type == 'recipe':
             new_row = pd.DataFrame({column: [''] for column in self.df.columns})
             # set blank row up as a member of the recipe
             new_row['item'] = self.df.iloc[0]['ingredient']
             self.df = pd.concat([self.df, new_row], ignore_index=True)
+            
+        # Update progress
+        self.progress_bar.value = 10
 
         # Create interface for each row of the DataFrame
-        for index, row in self.df.iterrows():
-            self.create_row(items, index, row)
+        for index, row in enumerate(self.df.iterrows()):
+            self.create_row(items, row[0], row[1])
+            # Update progress based on how many rows we've processed
+            if total_rows > 0:
+                progress = 10 + int((index + 1) / total_rows * 80)
+                self.progress_bar.value = min(progress, 90)
         
+        # Create the grid with all items
         grid = widgets.GridBox(items, layout=widgets.Layout(grid_template_columns=f"repeat({self.num_cols}, {self.width})"))
         # set the width of the first column to 100 pixels
         grid.layout.grid_template_columns = f"{self.width} {'px '.join([str(self.column_width[x]) for x in self.df.columns])}px"
+        
+        # Update progress and hide progress bar
+        self.progress_bar.value = 100
+        self.progress_bar.layout.visibility = 'hidden'
+        
         return grid
     
     def create_row(self, items, index, row):

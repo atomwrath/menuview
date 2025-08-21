@@ -201,6 +201,7 @@ class MenuViewer:
         
         # Get references to back button and ingredient accordion
         self.backbutton = self.df_widget.backbutton
+        self.progress_bar = self.df_widget.progress_bar
         
         # Create top display area
         self.top_display = widgets.VBox([
@@ -223,7 +224,7 @@ class MenuViewer:
             )
             menubuttons.append(button)
         
-        self.menubutton_hbox = widgets.HBox(menubuttons, layout=widgets.Layout(width='auto'))
+        self.menubutton_hbox = widgets.HBox(menubuttons + [self.progress_bar], layout=widgets.Layout(width='auto'))
         
         # Create title
         self.title = widgets.HTML(value=HTML_TEMPLATES['title'].format(text="Menu Viewer"))

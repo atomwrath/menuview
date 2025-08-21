@@ -27,6 +27,16 @@ class MenuDisplayWidget:
         self.search_history = []
         self.last_lookup = ''
         
+        # Add progress bar for loading
+        self.progress_bar = widgets.IntProgress(
+            value=0,
+            min=0,
+            max=100,
+            description='Loading:',
+            style={'description_width': 'initial'},
+            layout=widgets.Layout(width='200px', visibility='hidden')
+        )
+        
         # Initialize ingredient lists
         self.all_ingredients = set()
         self.simple_ingredients = set()
@@ -117,6 +127,10 @@ class MenuDisplayWidget:
     
     def update_display(self):
         """Update the display with widgets for each cell of the DataFrame"""
+            # Show progress bar and reset value
+        self.progress_bar.layout.visibility = 'visible'
+        self.progress_bar.value = 0
+        
         def addweight(row):
             """Helper function to add weight to a row"""
             try:
@@ -181,12 +195,21 @@ class MenuDisplayWidget:
         # Use this width for all buttons
         button_width = max_button_width
         
+        # Update progress
+        self.progress_bar.value = 40
+        
+        total_rows = len(self.df)
         # Iterate through DataFrame rows and create widgets for each cell
         for index, row in self.df.iterrows():
             row_widgets = []
             item_widget = None
             allergen_widget = None
             inglist_widget = None
+            
+            # Update progress based on row index
+            if total_rows > 0:
+                progress = 40 + int((index + 1) / total_rows * 50)
+                self.progress_bar.value = min(progress, 90)
             
             if self.df_type in ['guide', None]:
                 # we want to display the ingredient name and description
@@ -468,10 +491,17 @@ class MenuDisplayWidget:
         # Combine with the header row
         display_layout = widgets.VBox([header_hbox, rows_vbox])
         
+        # Update progress
+        self.progress_bar.value = 95
+        
         # Clear previous output and display the new layout
         with self.output:
             self.output.clear_output(wait=True)
             display(display_layout)
+            
+        # Update progress and hide progress bar
+        self.progress_bar.value = 100
+        self.progress_bar.layout.visibility = 'hidden'
     
     def make_on_click(self, ingredient):
         """Create an on_click handler for a specific ingredient"""
