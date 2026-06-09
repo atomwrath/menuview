@@ -161,7 +161,9 @@ class OrderGuideReader:
     def determine_file_type(self, filename):
         """Determine the type of file based on the filename"""
         filename_lower = filename.lower()
-        if 'order-confirmation' in filename_lower or 'orderconfirmation' in filename_lower:
+        if 'fporder' in filename_lower or 'freshpoint' in filename_lower:
+            return 'freshpoint_confirmation'
+        elif 'order-confirmation' in filename_lower or 'orderconfirmation' in filename_lower:
             return 'confirmation'
         elif 'order-guide' in filename_lower or 'orderguidepricelist' in filename_lower:
             return 'guide'
@@ -230,6 +232,8 @@ class OrderGuideReader:
                 print(f"Processing Order Guide Price List: {os.path.basename(selected_file)}...")
             elif self.file_type == 'confirmation':
                 print(f"Processing Order Confirmation: {os.path.basename(selected_file)}...")
+            elif self.file_type == 'freshpoint_confirmation':
+                print(f"Processing FreshPoint Order Confirmation: {os.path.basename(selected_file)}...")
             else:
                 print(f"Processing file (unknown type): {os.path.basename(selected_file)}...")
             
@@ -385,6 +389,8 @@ class OrderGuideReader:
         # Process based on file type
         if self.file_type == 'confirmation':
             return self.process_order_confirmation(df_raw, file_path)
+        elif self.file_type == 'freshpoint_confirmation':
+            return self.process_freshpoint_confirmation(df_raw, file_path)
         else:
             # Default to guide processing
             return self.process_order_guide(df_raw, file_path)
@@ -455,6 +461,84 @@ class OrderGuideReader:
             df['order'] = 1
         # Add remaining missing columns
         df['supplier'] = 'SR'  # Assuming SR as default supplier
+        df['note'] = ''
+        df['date'] = self.order_date if self.order_date else datetime.now().strftime('%Y-%m-%d')
+        
+        # Remove temporary column
+        df = df.drop(columns=['number_normalized'])
+        
+        return df
+    
+    def process_freshpoint_confirmation(self, df_raw, file_path):
+        """Process a FreshPoint order confirmation file"""
+        # Find the date in the file
+        self.order_date, self.all_found_dates = self.find_all_dates_in_data(df_raw)
+        
+        # Find the header row - look for 'Item#' in FreshPoint format
+        try:
+            header_row_index = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Item#', case=False).any(), axis=1)].index[0]
+        except IndexError:
+            raise ValueError("Could not find header row with 'Item#' in FreshPoint confirmation")
+        
+        # Re-read the Excel file starting from the header row
+        df = pd.read_excel(file_path, header=header_row_index)
+        
+        # Remove rows after "Order Summary" which marks the end of items
+        if 'Item#' in df.columns:
+            summary_idx = df[df['Item#'].astype(str).str.contains('Order Summary', case=False, na=False)].index
+            if len(summary_idx) > 0:
+                df = df.iloc[:summary_idx[0]]
+        
+        # Remove columns without a header value and empty rows
+        df = df.dropna(axis=1, how='all')
+        df = df.dropna(axis=0, how='all')
+        
+        # Remove rows where Item# is NaN (these are not actual items)
+        df = df[df['Item#'].notna()]
+        
+        # Map FreshPoint column names to standard names
+        columnmap = {
+            'Item#': 'number',
+            'Product': 'description',
+            'Size': 'size',
+            'Qty': 'order',
+            'Price': 'price'
+        }
+        
+        mymap = {key: value for key, value in columnmap.items() if key in df.columns}
+        df = df.rename(columns=mymap)
+        
+        # Clean up the size column - remove non-breaking spaces and extra whitespace
+        if 'size' in df.columns:
+            df['size'] = df['size'].astype(str).str.replace('\xa0', ' ').str.strip()
+            # Remove unit codes from the end (any 2-3 letter uppercase code, optionally followed by *)
+            # This catches BG, CS, BX, BUS, FL, and any other similar codes
+            df['size'] = df['size'].str.replace(r'\s+[A-Z]{2,3}\*?$', '', regex=True)
+        
+        # Normalize product numbers and prices
+        df['number_normalized'] = df['number'].apply(self.normalize_product_number)
+        if 'price' in df.columns:
+            df['price'] = df['price'].apply(self.normalize_price)
+        
+        # Assign nicknames if we have a cost calculator instance
+        if self.cc is not None and hasattr(self.cc, 'uni_g'):
+            self.assign_nicknames_and_metadata(df)
+        else:
+            df['nickname'] = None
+            df['allergen'] = ''
+            df['conversion'] = ''
+        
+        # Ensure order column exists and has proper values
+        if 'order' not in df.columns:
+            df['order'] = 1
+        else:
+            # Convert order quantities to numeric, default to 1 if not valid
+            df['order'] = pd.to_numeric(df['order'], errors='coerce').fillna(1)
+        
+        # Add remaining missing columns - use 'FP' for FreshPoint supplier
+        df['supplier'] = 'FP'
+        df['unit'] = 'ea'  # FreshPoint typically uses 'ea' (each) as the unit
+        df['brand'] = ''
         df['note'] = ''
         df['date'] = self.order_date if self.order_date else datetime.now().strftime('%Y-%m-%d')
         
@@ -666,8 +750,8 @@ class OrderGuideReader:
                     ]
                     
                     if not duplicate_entries.empty:
-                        # For order confirmations, overwrite existing entries instead of skipping
-                        if self.file_type == 'confirmation':
+                        # For order confirmations (both SR and FreshPoint), overwrite existing entries instead of skipping
+                        if self.file_type in ['confirmation', 'freshpoint_confirmation']:
                             # Get indices of duplicate entries in the original uni_g
                             dup_indices = self.cc.uni_g[
                                 (self.cc.uni_g['number'].apply(self.normalize_product_number) == norm_num) & 
@@ -705,8 +789,9 @@ class OrderGuideReader:
                     self.cc.costdf['cost'] = 0
                 
                 # Report based on file type
-                if self.file_type == 'confirmation':
-                    print(f"Updated {updated_items} items from order confirmation.")
+                if self.file_type in ['confirmation', 'freshpoint_confirmation']:
+                    supplier_name = "FreshPoint" if self.file_type == 'freshpoint_confirmation' else "SR"
+                    print(f"Updated {updated_items} items from {supplier_name} order confirmation.")
                     print(f"Added {new_items} new items.")
                     print(f"Overwritten {overwritten_items} duplicate items.")
                     print(f"Recorded quantities for {updated_items + new_items + overwritten_items} items.")
