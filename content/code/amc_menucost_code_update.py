@@ -9,7 +9,10 @@ from order_guide_reader import OrderGuideReader  # Import the new class
 def main():
     # Initialize the cost calculator with the database
     cc = CostCalculator()
-    cc.read_from_xlsx('amc_menu_database.xlsx')
+    try:
+        cc.read_from_xlsx('amc_menu_database.xlsx')
+    except FileNotFoundError:
+        pass  # Explorer will show the filename in red; user can reload or write
     
     # Create the order guide reader with the cost calculator instance
     order_reader = OrderGuideReader(cc=cc)

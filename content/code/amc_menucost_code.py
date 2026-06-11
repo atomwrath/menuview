@@ -6,9 +6,11 @@ from costcalulator import CostCalculator
 from data_frame_explorer import DataFrameExplorer
 
 def main():
-    # Initialize the cost calculator with the database
     cc = CostCalculator()
-    cc.read_from_xlsx('amc_menu_database.xlsx')
+    try:
+        cc.read_from_xlsx('amc_menu_database.xlsx')
+    except FileNotFoundError:
+        pass  # Explorer will show the filename in red; user can reload or write
     
     # Create and display the explorer
     explorer = DataFrameExplorer(cc=cc)

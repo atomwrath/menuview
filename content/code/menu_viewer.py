@@ -35,6 +35,24 @@ class MenuViewer:
         
         # Try to load default database
         self.try_load_default_database()
+        
+    def _build_menu_buttons(self):
+        """Build menu shortcut buttons from the children of 'fullmenu' in costdf."""
+        try:
+            menulist = self.cc.get_children('fullmenu')
+        except (KeyError, AttributeError):
+            menulist = []
+
+        menubuttons = []
+        for menu in menulist:
+            button = create_styled_button(
+                menu.capitalize(),
+                self.df_widget.make_on_click(menu),
+                style='primary',
+                styledict=dict(font_weight='bold', font_variant='small-caps')
+            )
+            menubuttons.append(button)
+        return menubuttons
     
     def setup_file_selector_with_upload(self):
         """Set up the file selection UI components with file upload functionality"""
@@ -213,18 +231,10 @@ class MenuViewer:
         self.setup_highlighting_section()
         
         # Create menu buttons
-        menulist = ['breakfast', 'lunch', 'dinner', 'desserts']
-        menubuttons = []
-        for menu in menulist:
-            button = create_styled_button(
-                menu.capitalize(), 
-                self.df_widget.make_on_click(menu),
-                style='primary',
-                styledict=dict(font_weight='bold', font_variant="small-caps")
-            )
-            menubuttons.append(button)
-        
-        self.menubutton_hbox = widgets.HBox(menubuttons + [self.progress_bar], layout=widgets.Layout(width='auto'))
+        self.menubutton_hbox = widgets.HBox(
+            self._build_menu_buttons() + [self.progress_bar],
+            layout=widgets.Layout(width='auto')
+        )
         
         # Create title
         self.title = widgets.HTML(value=HTML_TEMPLATES['title'].format(text="Menu Viewer"))
@@ -536,8 +546,10 @@ class MenuViewer:
             
             # Update UI with new data
             self.update_all_values()
+            self.menubutton_hbox.children = tuple(self._build_menu_buttons() + [self.progress_bar])
         except Exception as e:
             self.selected_file_label.value = f'Error loading file: {filename}. {str(e)}'
+            
     
     def update_all_values(self):
         """Update the set of all valid values for search"""
