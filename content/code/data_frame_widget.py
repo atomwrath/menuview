@@ -27,6 +27,14 @@ class DataFrameWidget:
         self.num_cols = 0
         self.trigger = trigger
         self.last_lookup = ''
+        self.last_lookup = ''
+        self.equ_quant_unit = None              # target unit for "equ quant" column
+        self.scale_factor = None                # current display scale ratio (float|None)
+        self._pending_lookup_quantity = None    # set by on_lookup_click before trigger fires
+        self._navigating_back = False           # True while on_back_click is executing;
+                                                # tells update_search not to clear scale
+        self.search_history = []
+        self.scale_stack = []    # parallel to search_history; entry[i] = scale active at level i
         self.search_history = []  # Add this line for tracking history
         self.backbutton = widgets.Button(description='Back', disabled=True)
         self.backbutton.on_click(self.on_back_click) 
@@ -59,7 +67,9 @@ class DataFrameWidget:
 
     def setdf(self, mylookup):
         self.last_lookup = mylookup
-        mydf =  self.cc.findframe(mylookup).reset_index(drop=True).copy()
+        mydf = self.cc.findframe(
+            mylookup, equ_quant_unit=self.equ_quant_unit
+        ).reset_index(drop=True).copy()
         self.df = mydf
         self.findtype()
         if (self.df_type == 'recipe'):
@@ -72,8 +82,13 @@ class DataFrameWidget:
                     add_costx(mydf, cm)
             if 'menu price' in mydf.columns and len(self.cost_multipliers) > 0:
                 add_netprofit(mydf, self.cost_multipliers[0])
+            # Apply view-mode scaling after all columns are finalised.
+            # This is purely cosmetic – cc.costdf is never touched.
+            if self.scale_factor is not None:
+                mydf = self._apply_scaling(mydf, self.scale_factor)
             self.df = mydf
             self.update_column_width()
+
         else:
             mycolumns = mydf.columns
             if (self.df_type == 'guide'):
@@ -106,6 +121,60 @@ class DataFrameWidget:
             self.column_width = {c: 5 + 8 * len(str(c)) for c in self.df.columns}
             if self.df_type == 'recipe':
                 self.column_width['item'] = 5 + 8 * len('recipe for:')
+                
+    def _apply_scaling(self, mydf, scale):
+        '''Scale quantities and costs in a display copy of a recipe DataFrame.
+ 
+        This never writes back to self.cc.costdf – it only modifies the copy
+        that will be displayed to the user in view mode.
+ 
+        Columns scaled:
+          - quantity    : pint-aware string  ("1 cup"     → "0.5000 cup")
+          - equ quant   : pint-aware string  ("236.5 g"   → "118.2 g"), skips n/a
+          - cost        : float
+          - cost N.Nx   : float  (any "cost N.Nx" column added by add_costx)
+        '''
+        # No-op for full batches: avoids reformatting original quantity strings
+        # ("1 cup" would otherwise become "1.0000 cup").
+        if abs(scale - 1.0) < 1e-9:
+            return mydf
+        for idx in mydf.index:
+            # ── quantity ──────────────────────────────────────────────────────
+            q_str = str(mydf.at[idx, 'quantity'])
+            try:
+                q = parse_quant(q_str)
+                if q is not None and hasattr(q, 'm') and q.m > 0:
+                    mydf.at[idx, 'quantity'] = f"{(q * scale):~.4f}"
+            except Exception:
+                pass
+ 
+            # ── equ quant (skip blanks and "n/a") ────────────────────────────
+            if 'equ quant' in mydf.columns:
+                eq_str = str(mydf.at[idx, 'equ quant'])
+                if eq_str not in ('', 'nan', 'n/a', 'None'):
+                    try:
+                        eq = parse_quant(eq_str)
+                        if eq is not None and hasattr(eq, 'm') and eq.m > 0:
+                            mydf.at[idx, 'equ quant'] = f"{(eq * scale):~.4f}"
+                    except Exception:
+                        pass
+ 
+            # ── cost ─────────────────────────────────────────────────────────
+            if 'cost' in mydf.columns:
+                try:
+                    mydf.at[idx, 'cost'] = float(mydf.at[idx, 'cost']) * scale
+                except (TypeError, ValueError):
+                    pass
+ 
+            # ── cost N.Nx columns (added by add_costx) ───────────────────────
+            for col in mydf.columns:
+                if col != 'cost' and col.startswith('cost') and col.endswith('x'):
+                    try:
+                        mydf.at[idx, col] = float(mydf.at[idx, col]) * scale
+                    except (TypeError, ValueError):
+                        pass
+ 
+        return mydf
         
     # def update_display(self):
     #     self.grid.disabled = True
@@ -655,26 +724,74 @@ class DataFrameWidget:
                 cell_widget.layout.visibility = 'hidden'
             items.append(cell_widget)
             
+    # def on_back_click(self, button):
+    #     """Handle back button click"""
+    #     if len(self.search_history) > 1:
+    #         self.search_history.pop()  # Remove current
+    #         previous = self.search_history[-1]  # Get previous without popping it
+            
+    #         # Store current search_history
+    #         saved_history = self.search_history.copy()
+            
+    #         # Look up the previous item without adding to history
+    #         self.setdf(previous)
+            
+    #         # Restore history
+    #         self.search_history = saved_history
+            
+    #         # Update the back button state
+    #         self.backbutton.disabled = len(self.search_history) <= 1
+            
+    #         # Update display
+    #         self.update_display()
     def on_back_click(self, button):
-        """Handle back button click"""
+        '''Navigate to the previous item in the search history.
+ 
+        Restores the scale_factor that was active at that history level so nested
+        scaled recipes remain correct at every depth.
+ 
+        Sets self._navigating_back = True so that if DataFrameExplorer subsequently
+        fires update_search (e.g. to sync searchinput.value), that handler will
+        not overwrite the scale_factor we just restored.
+ 
+        scale_stack layout
+        ──────────────────
+          index 0  root recipe        → scale None  (always unscaled)
+          index 1  first sub-recipe   → scale 0.5   (parent used ½ the yield)
+          index 2  second sub-recipe  → scale 0.5   (that sub used ½ of its yield)
+ 
+        Popping one level restores stack[-1], which is exactly the scale that was
+        active when the now-current item was first navigated to.
+        '''
+        self._pending_lookup_quantity = None
+ 
         if len(self.search_history) > 1:
-            self.search_history.pop()  # Remove current
-            previous = self.search_history[-1]  # Get previous without popping it
-            
-            # Store current search_history
+            self.search_history.pop()
+            if self.scale_stack:
+                self.scale_stack.pop()
+ 
+            # Restore the scale that belongs to the level we are going back to
+            self.scale_factor = self.scale_stack[-1] if self.scale_stack else None
+ 
+            # Signal update_search (if it fires) to preserve this scale
+            self._navigating_back = True
+ 
+            previous = self.search_history[-1]
             saved_history = self.search_history.copy()
-            
-            # Look up the previous item without adding to history
-            self.setdf(previous)
-            
-            # Restore history
+            saved_stack   = self.scale_stack.copy()
+ 
+            self.setdf(previous)          # uses the just-restored scale_factor
+ 
             self.search_history = saved_history
-            
-            # Update the back button state
+            self.scale_stack    = saved_stack
+ 
             self.backbutton.disabled = len(self.search_history) <= 1
-            
-            # Update display
             self.update_display()
+ 
+            # If DataFrameExplorer did NOT fire update_search (no extra handler),
+            # _navigating_back would stay True indefinitely.  Clear it here as a
+            # safety net; update_search clears it first if it runs.
+            self._navigating_back = False
                     
     def on_duplicate_click(self, button):
         row = self.df.loc[button.tag]
@@ -744,18 +861,39 @@ class DataFrameWidget:
             self.search_name(row['nickname'])
         self.update_display()
 
-    def on_lookup_click(self, button):
-        # Retrieve the row from the DataFrame using the button's 'tag' attribute
-        row = self.df.loc[button.tag]
+    # def on_lookup_click(self, button):
+    #     # Retrieve the row from the DataFrame using the button's 'tag' attribute
+    #     row = self.df.loc[button.tag]
             
-        # Update the DataFrame and the grid
+    #     # Update the DataFrame and the grid
+    #     if self.df_type == 'recipe':
+    #         if row['item'] != 'recipe':
+    #             self.trigger(row['ingredient'])
+
+    #     elif self.df_type == 'mentions':
+    #         self.trigger(row['item'])
+
+    #     button.disabled = True
+    def on_lookup_click(self, button):
+        '''Navigate to the ingredient's own recipe / guide entry.
+ 
+        Before calling the trigger we store the parent-recipe quantity of this
+        ingredient so DataFrameExplorer.trigger_update can compute a scale
+        factor and display the sub-recipe scaled to exactly the amount required
+        by the parent recipe (view mode only).
+        '''
+        row = self.df.loc[button.tag]
+ 
         if self.df_type == 'recipe':
             if row['item'] != 'recipe':
+                # Save the quantity used in the parent recipe for scale calculation
+                self._pending_lookup_quantity = row.get('quantity', None)
                 self.trigger(row['ingredient'])
-
+ 
         elif self.df_type == 'mentions':
+            self._pending_lookup_quantity = None   # no scaling for mention lookups
             self.trigger(row['item'])
-
+ 
         button.disabled = True
 
     def search_name(self, search):
@@ -786,9 +924,12 @@ class DataFrameWidget:
             self.cc.recipe_cost(self.df.iloc[0]['ingredient'])
             self.setdf(lookup)
         
-        # Update search history
+        # Mirror scale_factor into scale_stack whenever a new entry is pushed.
+        # scale_factor has already been set by DataFrameExplorer.update_search
+        # (or left unchanged by on_back_click) before lookup_name is called.
         if not self.search_history or lookup != self.search_history[-1]:
             self.search_history.append(lookup)
+            self.scale_stack.append(self.scale_factor)
         
         # Update back button state
         self.backbutton.disabled = len(self.search_history) <= 1

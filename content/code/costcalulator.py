@@ -591,30 +591,68 @@ class CostCalculator:
             
         orderdf.to_csv(filename)
         
-    def add_equ_quant(self, row):
-        ''' add equivalent quantity to menu cost item
+    
+    def add_equ_quant(self, row, target_unit=None):
+        ''' Add equivalent quantity to a menu cost item.
+ 
+        Parameters
+        ----------
+        row         : DataFrame row (used with .apply(axis=1))
+        target_unit : str or None
+            When provided (e.g. "cup", "g", "oz") every ingredient quantity is
+            converted to that unit using do_conversion (which honours the
+            ingredient's own conversion factors).  "n/a" is written when the
+            conversion is not possible.
+            When None the original behaviour is preserved: the column is filled
+            with the quantity expressed in the natural unit recorded in the cost
+            database.
         '''
-        #row = row.copy()
+        if target_unit is not None:
+            # ── New behaviour: convert to caller-specified unit ──────────────
+            q = parse_quant(row['quantity'])
+            if q is None or q.m <= 0:
+                row['equ quant'] = 'n/a'
+                return row
+            try:
+                # do_conversion handles ingredient-specific conversion factors
+                result = self.do_conversion(
+                    row['ingredient'],
+                    str(row['quantity']),
+                    f'1 {target_unit}'
+                )
+                if result is not None:
+                    row['equ quant'] = f"{result:~.4f}"
+                else:
+                    row['equ quant'] = 'n/a'
+            except Exception:
+                row['equ quant'] = 'n/a'
+            return row
+ 
+        # ── Original behaviour: use natural unit from cost database ──────────
         if self.find_nick(row['ingredient']).empty:
             return row
         cl = self.get_cost_df(row['ingredient'], row['quantity'])
         q = parse_quant(row['quantity'])
         if q.m <= 0:
             return row
-        cpq = Q_(cl.iloc[0]['$/quantity'].replace('ct','count'))
+        cpq = Q_(cl.iloc[0]['$/quantity'].replace('ct', 'count'))
         conv = Q_(cl.iloc[0]['myconversion'].replace('ct', 'count'))
         row['equ quant'] = ''
         if type(q) in (int, float):
             return row
-        elif q.dimensionality != (1/cpq).dimensionality:
-            row['equ quant'] = f"{(q*conv).to_reduced_units().to(1/cpq.units):~.4f}"
-        elif q.dimensionality == (1/cpq).dimensionality:
-            if q.units != (1/cpq).units:
-                row['equ quant'] = f"{q.to((1/cpq).units):~.4f}"
+        elif q.dimensionality != (1 / cpq).dimensionality:
+            row['equ quant'] = f"{(q * conv).to_reduced_units().to(1 / cpq.units):~.4f}"
+        elif q.dimensionality == (1 / cpq).dimensionality:
+            if q.units != (1 / cpq).units:
+                row['equ quant'] = f"{q.to((1 / cpq).units):~.4f}"
         return row
     
-    def findframe(self, ingredient):
+    def findframe(self, ingredient, equ_quant_unit=None):
         ''' universal method to return the definition(s) of ingredient
+ 
+        equ_quant_unit : str or None
+            When set, the "equ quant" column in the returned DataFrame will
+            contain quantities converted to this unit (or "n/a" on failure).
         '''
         myselection = pd.DataFrame()
         if ingredient is not None:
@@ -622,19 +660,22 @@ class CostCalculator:
             ilist = self.item_list(ingredient)
             if rentry is not None and not rentry.empty:
                 myselection = pd.concat([rentry, ilist], ignore_index=True)
-                myselection = myselection.apply(self.add_equ_quant, axis=1)
+                myselection = myselection.apply(
+                    lambda row: self.add_equ_quant(row, equ_quant_unit), axis=1
+                )
                 myselection = reorder_columns(myselection, self.costdf_order)
-                
-            else:# look in guide if no results in menu
-                # if no matches in guide return empty dataframe
+            else:
+                # look in guide if no results in menu
                 if self.find_nick(ingredient).empty:
                     return pd.DataFrame()
                 myselection = self.cost_picker(self.get_cost_df(ingredient))
                 if not myselection.empty:
-                    myselection['equ size'] = myselection['size'].apply(lambda x: f"{parse_size(x):~}")
+                    myselection['equ size'] = myselection['size'].apply(
+                        lambda x: f"{parse_size(x):~}"
+                    )
                     myselection = reorder_columns(myselection, self.uni_g_easyorder)
-                    
         return myselection
+        
     
     def find_mentions(self, iname):
         ''' find recipes that have iname as an ingredient

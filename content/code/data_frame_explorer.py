@@ -30,6 +30,9 @@ class DataFrameExplorer:
         
         # Track current mode (edit/view)
         self.edit_mode = True
+        # Pending scale factor computed in trigger_update, consumed in update_search.
+        # Using an intermediate variable avoids a race with the searchinput observer.
+        self._scale_pending = None
 
         # top utility displays
         cost_chooser = widgets.Text(value='menucost.xlsx')
@@ -82,9 +85,24 @@ class DataFrameExplorer:
         )
         self.mode_toggle_button.on_click(self.toggle_edit_mode)
 
+        # hide_toggles = [widgets.Label(value='Show/Hide columns:', layout=widgets.Layout(width='40%'))]
+        # for col in self.hide_columns:
+        #     # use saved cost check box
+        #     hide_quant = widgets.Checkbox(
+        #         value=False,
+        #         description=col,
+        #         disabled=False,
+        #         indent=False
+        #     )
+        #     hide_quant.observe(lambda change, col=col: self.hide_col(change, col), 'value')
+        #     hide_toggles.append(hide_quant)
+            
+        # self.hide_toggleVBox = widgets.HBox(hide_toggles)
+        
         hide_toggles = [widgets.Label(value='Show/Hide columns:', layout=widgets.Layout(width='40%'))]
         for col in self.hide_columns:
-            # use saved cost check box
+            if col == 'equ quant':
+                continue  # Controlled by the unit text input below, not a checkbox
             hide_quant = widgets.Checkbox(
                 value=False,
                 description=col,
@@ -93,7 +111,21 @@ class DataFrameExplorer:
             )
             hide_quant.observe(lambda change, col=col: self.hide_col(change, col), 'value')
             hide_toggles.append(hide_quant)
-            
+ 
+        # ── Equ Quant unit input (replaces the old checkbox) ─────────────────
+        # Empty / invalid  →  column hidden
+        # Valid pint unit  →  column shown, values converted to that unit
+        hide_toggles.append(
+            widgets.Label(value='Equ Quant Unit:', layout=widgets.Layout(margin='0 4px 0 12px'))
+        )
+        self.equ_quant_input = widgets.Text(
+            value='',
+            placeholder='e.g. cup, lb, g, oz',
+            layout=widgets.Layout(width='130px')
+        )
+        self.equ_quant_input.observe(self.on_equ_quant_unit_change, names='value')
+        hide_toggles.append(self.equ_quant_input)
+ 
         self.hide_toggleVBox = widgets.HBox(hide_toggles)
 
         # use saved cost check box
@@ -198,42 +230,75 @@ class DataFrameExplorer:
         ])
    
         
-    def toggle_edit_mode(self, b=None):
-        """Toggle between edit mode and view mode"""
-        # Toggle the current mode
-        self.edit_mode = not self.edit_mode
+    # def toggle_edit_mode(self, b=None):
+    #     """Toggle between edit mode and view mode"""
+    #     # Toggle the current mode
+    #     self.edit_mode = not self.edit_mode
         
+    #     if self.edit_mode:
+    #         # Switching to edit mode
+    #         self.mode_toggle_button.description = 'Edit Mode'
+    #         self.mode_toggle_button.button_style = 'warning'
+            
+    #         # Enable editing
+    #         self.enabled_columns = self.all_enabled_columns.copy()
+            
+    #         # Show editor widgets
+    #         for widget in self.editor_widgets.values():
+    #             widget.layout.display = 'flex'
+                
+    #     else:
+    #         # Switching to view mode
+    #         self.mode_toggle_button.description = 'View Mode'
+    #         self.mode_toggle_button.button_style = 'info'
+            
+    #         # Disable editing
+    #         self.enabled_columns = []
+            
+    #         # Hide editor widgets
+    #         for widget in self.editor_widgets.values():
+    #             widget.layout.display = 'none'
+        
+    #     # Update the DataFrameWidget with new enabled_columns
+    #     self.df_widget.enabled_columns = self.enabled_columns
+        
+    #     # Reload the current view to apply the changes
+    #     if self.df_widget.last_lookup:
+    #         self.df_widget.lookup_name(self.df_widget.last_lookup)
+    #         self.df_widget.update_display()
+    def toggle_edit_mode(self, b=None):
+        '''Toggle between edit mode and view mode.
+ 
+        Edit → View : use _activate_view_mode, then reload to render in view.
+        View → Edit : clear any active scaling so the original (unscaled)
+                      recipe is shown, then reload to render editable cells.
+        '''
         if self.edit_mode:
-            # Switching to edit mode
+            # ── Edit → View ──────────────────────────────────────────────────
+            self._activate_view_mode()      # flips flag, updates UI, no reload
+            if self.df_widget.last_lookup:
+                self.df_widget.lookup_name(self.df_widget.last_lookup)
+                self.df_widget.update_display()
+ 
+        else:
+            # ── View → Edit ──────────────────────────────────────────────────
+            # Clear scaling: user must see original recipe quantities to edit
+            self.df_widget.scale_factor = None
+            self.df_widget.scale_stack = [None] * len(self.df_widget.search_history)
+            self._scale_pending = None
+ 
+            self.edit_mode = True
             self.mode_toggle_button.description = 'Edit Mode'
             self.mode_toggle_button.button_style = 'warning'
-            
-            # Enable editing
             self.enabled_columns = self.all_enabled_columns.copy()
-            
-            # Show editor widgets
-            for widget in self.editor_widgets.values():
-                widget.layout.display = 'flex'
-                
-        else:
-            # Switching to view mode
-            self.mode_toggle_button.description = 'View Mode'
-            self.mode_toggle_button.button_style = 'info'
-            
-            # Disable editing
-            self.enabled_columns = []
-            
-            # Hide editor widgets
-            for widget in self.editor_widgets.values():
-                widget.layout.display = 'none'
-        
-        # Update the DataFrameWidget with new enabled_columns
-        self.df_widget.enabled_columns = self.enabled_columns
-        
-        # Reload the current view to apply the changes
-        if self.df_widget.last_lookup:
-            self.df_widget.lookup_name(self.df_widget.last_lookup)
-            self.df_widget.update_display()
+            for widget_obj in self.editor_widgets.values():
+                widget_obj.layout.display = 'flex'
+            self.df_widget.enabled_columns = self.enabled_columns
+ 
+            # Reload the original (unscaled) recipe
+            if self.df_widget.last_lookup:
+                self.df_widget.lookup_name(self.df_widget.last_lookup)
+                self.df_widget.update_display()
     
     def trigger_mentions(self, iname):
         # reload current search in no iname
@@ -242,20 +307,91 @@ class DataFrameExplorer:
         else:
             self.searchinput.value = iname
     
+    # def trigger_update(self, iname):
+    #     self.searchinput.value = iname
+        
     def trigger_update(self, iname):
+        '''Handle a lookup navigation request from the DataFrameWidget.
+ 
+        When the request originates from clicking a recipe ingredient's lookup
+        button, the widget stores the parent-recipe quantity in
+        df_widget._pending_lookup_quantity.  If iname has a sub-recipe, we
+        compute a scale factor so the sub-recipe is displayed scaled to the
+        portion used in the parent recipe.
+ 
+        Scale pipeline
+        ──────────────
+        1. on_lookup_click sets df_widget._pending_lookup_quantity
+        2. trigger_update reads it, clears it, computes scale → _scale_pending
+        3. Changing searchinput.value fires update_search (observer)
+        4. update_search reads _scale_pending, sets df_widget.scale_factor,
+           then calls lookup_name / update_display
+        '''
+        parent_quantity = self.df_widget._pending_lookup_quantity
+        self.df_widget._pending_lookup_quantity = None   # consume immediately
+        self._scale_pending = None                       # default: no scaling
+ 
+        if parent_quantity is not None:
+            scale = self._compute_scale_factor(iname, parent_quantity)
+            if scale is not None:
+                # Auto-switch to view mode (scaling never applies in edit mode)
+                self._activate_view_mode()
+                self._scale_pending = scale
+ 
         self.searchinput.value = iname
         
+    # def update_search(self, change):
+    #     if change['new'] in self.allvals:
+    #         change['owner'].style.text_color = self.defcolor
+    #         iname = change['new']
+
+    #         self.df_widget.lookup_name(iname)
+    #         self.df_widget.update_display()
+    #         self.update_mentions(iname)
+
+    #     else:
+    #         change['owner'].style.text_color = 'red'
+    
     def update_search(self, change):
+        '''Respond to searchinput value changes (user typing or trigger_update).
+ 
+        Scale decision logic
+        ────────────────────
+        _scale_pending is not None  →  forward navigation via lookup click;
+                                        use the freshly computed scale.
+        _scale_pending is None AND
+          _navigating_back is True   →  called from the back-button chain;
+                                        scale_factor was already restored by
+                                        on_back_click – don't touch it.
+        _scale_pending is None AND
+          _navigating_back is False  →  manual search or menu button;
+                                        clear scale (show full recipe).
+        '''
         if change['new'] in self.allvals:
             change['owner'].style.text_color = self.defcolor
             iname = change['new']
-
+ 
+            # Read and clear the back-navigation flag before anything else.
+            navigating_back = self.df_widget._navigating_back
+            self.df_widget._navigating_back = False
+ 
+            if self._scale_pending is not None:
+                # Forward scaled navigation
+                self.df_widget.scale_factor = self._scale_pending
+            elif not navigating_back:
+                # Fresh / manual navigation – clear any active scale
+                self.df_widget.scale_factor = None
+ 
+            self._scale_pending = None
+ 
             self.df_widget.lookup_name(iname)
             self.df_widget.update_display()
             self.update_mentions(iname)
-
+ 
         else:
             change['owner'].style.text_color = 'red'
+            self._scale_pending = None
+            self.df_widget._navigating_back = False
 
     def cost_selector(self, change):
         method = change['new']
@@ -283,6 +419,96 @@ class DataFrameExplorer:
         self.df_widget.hide_columns = self.hide_columns
         self.df_widget.lookup_name(self.df_widget.last_lookup)
         self.df_widget.update_display()
+        
+    def _compute_scale_factor(self, ingredient, parent_quantity):
+        '''Return the ratio parent_quantity / recipe_yield, or None on failure.
+ 
+        A returned value of 0.5 means "make half a batch of this sub-recipe".
+        The calculation respects ingredient-specific unit conversions via
+        CostCalculator.do_conversion (e.g. volume ↔ weight for a known item).
+        '''
+        recipe_entry = self.cc.get_recipe_entry(ingredient)
+        if recipe_entry.empty:
+            return None   # ingredient has no sub-recipe – nothing to scale
+ 
+        recipe_yield_str = str(recipe_entry.squeeze()['quantity']).strip()
+        if not recipe_yield_str:
+            return None
+ 
+        try:
+            pq = parse_quant(str(parent_quantity))    # e.g. Q_("1 cup")
+            ry = parse_quant(recipe_yield_str)        # e.g. Q_("2 cup")
+ 
+            if pq is None or ry is None or ry.m == 0:
+                return None
+ 
+            # Same dimensionality → direct ratio
+            if pq.dimensionality == ry.dimensionality:
+                return float((pq / ry).to_reduced_units().m)
+ 
+            # Different dimensionality → try ingredient conversion factors
+            converted = self.cc.do_conversion(
+                ingredient, str(parent_quantity), recipe_yield_str
+            )
+            if converted is not None:
+                return float((converted / ry).to_reduced_units().m)
+ 
+        except Exception as exc:
+            print(f'[scale] could not compute scale for "{ingredient}": {exc}')
+ 
+        return None
+ 
+    def _activate_view_mode(self):
+        '''Switch to view mode WITHOUT triggering a data reload.
+ 
+        Used when auto-switching during a scaled lookup so the reload is
+        handled only once by update_search, not twice.
+        '''
+        if not self.edit_mode:
+            return   # already in view mode
+ 
+        self.edit_mode = False
+        self.mode_toggle_button.description = 'View Mode'
+        self.mode_toggle_button.button_style = 'info'
+        self.enabled_columns = []
+        for widget_obj in self.editor_widgets.values():
+            widget_obj.layout.display = 'none'
+        self.df_widget.enabled_columns = self.enabled_columns
+        # Deliberately no reload here – the caller owns the navigation.
+        
+    def on_equ_quant_unit_change(self, change):
+        '''Handle changes to the equ quant unit text input.
+ 
+        * Empty input or unrecognised unit → hide "equ quant" column.
+        * Valid pint unit                  → show "equ quant" column and
+                                             convert all ingredient quantities
+                                             to that unit ("n/a" where not
+                                             possible).
+        Input box turns red for an invalid (non-empty) entry.
+        '''
+        unit_str = change['new'].strip()
+        valid = False
+        if unit_str:
+            try:
+                ureg.Unit(unit_str)   # ureg is imported via `from utils import *`
+                valid = True
+            except Exception:
+                valid = False
+ 
+        if valid:
+            self.hide_columns = set(self.hide_columns) - {'equ quant'}
+            self.df_widget.equ_quant_unit = unit_str
+            self.equ_quant_input.style.text_color = self.defcolor
+        else:
+            self.hide_columns = set(self.hide_columns).union({'equ quant'})
+            self.df_widget.equ_quant_unit = None
+            # Red for invalid entry, default colour when simply empty
+            self.equ_quant_input.style.text_color = 'red' if unit_str else self.defcolor
+ 
+        self.df_widget.hide_columns = self.hide_columns
+        if self.df_widget.last_lookup:
+            self.df_widget.lookup_name(self.df_widget.last_lookup)
+            self.df_widget.update_display()
 
     def usesaved(self, change):
         # set cc to use saved cost depending on user checkbox
