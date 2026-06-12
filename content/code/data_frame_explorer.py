@@ -224,9 +224,9 @@ class DataFrameExplorer:
         # Valid pint unit  →  column shown, values converted to that unit
         self.equ_quant_input = widgets.Text(
             value='',
-            placeholder='e.g. cup, g',
+            placeholder='e.g. 1/4 tsp, 0',
             continuous_update=False,
-            layout=widgets.Layout(width='100px')
+            layout=widgets.Layout(width='120px')
         )
         self.equ_quant_input.observe(self.on_equ_quant_unit_change, names='value')
 
@@ -524,9 +524,7 @@ class DataFrameExplorer:
         scale = self.df_widget.scale_factor
         if scale is not None:
             try:
-                quant_str = str(
-                    (parse_quant(recipe_yield_str) * scale).to_reduced_units()
-                )
+                quant_str = f"{(parse_quant(recipe_yield_str) * scale):~.2f}"
             except Exception:
                 quant_str = recipe_yield_str
         else:
@@ -550,21 +548,27 @@ class DataFrameExplorer:
                 print(f'No base ingredients found for "{item}".')
             return
 
-        # ── Normalise quantities to g / ml ────────────────────────────────────
         flat_df = flat_df.copy()
+
+        # ── Add equ quant BEFORE normalising ──────────────────────────────────
+        # add_equ_quant must receive the original quantity strings ("1/8 tsp",
+        # "2 cup", …) — not the display-rounded "0.00 ml" that normalisation
+        # would produce for very small quantities.
+        equ_unit = self.df_widget.equ_quant_unit
+        equ_prec = self.df_widget.equ_quant_precision
+        if equ_unit:
+            flat_df = flat_df.apply(
+                lambda row: self.cc.add_equ_quant(row, equ_unit, precision=equ_prec),
+                axis=1
+            )
+
+        # ── Normalise quantities to g / ml for display ────────────────────────
         flat_df['quantity'] = flat_df.apply(
             lambda row: self._normalize_to_standard_units(
                 row['ingredient'], str(row['quantity'])
             ),
             axis=1
         )
-
-        # ── Add equ quant column if a unit is active ──────────────────────────
-        equ_unit = self.df_widget.equ_quant_unit
-        if equ_unit:
-            flat_df = flat_df.apply(
-                lambda row: self.cc.add_equ_quant(row, equ_unit), axis=1
-            )
 
         # ── Sort ──────────────────────────────────────────────────────────────
         flat_df = self._sort_flattened(flat_df)
@@ -654,18 +658,20 @@ class DataFrameExplorer:
            then calls lookup_name / update_display
         '''
         
+        
         # In flatten mode the display is managed by _show_flattened_recipe.
         if self.mode_selector.value == 'Flatten':
             if self.df_widget._navigating_back:
-                # Back was clicked — sync the dropdown and the search box.
-                # Setting searchinput.value fires update_search, which handles
-                # the display refresh, scale restoration, and mentions update.
+                # Back button — switch to View and let update_search handle it.
                 self._mode_changing = True
                 self.mode_selector.value = 'View'
                 self._mode_changing = False
                 self.searchinput.value = iname
-            return
-
+                return
+            # Menu buttons and lookup buttons both fall through to the normal
+            # navigation path below.  update_search will sync the dropdown to
+            # View (for menu buttons); _activate_view_mode handles it for
+            # scaled sub-recipe lookups.
 
         parent_quantity = self.df_widget._pending_lookup_quantity
         self.df_widget._pending_lookup_quantity = None   # consume immediately
@@ -710,10 +716,16 @@ class DataFrameExplorer:
         if change['new'] in self.allvals:
             change['owner'].style.text_color = self.defcolor
             iname = change['new']
- 
+                
             # Read and clear the back-navigation flag before anything else.
             navigating_back = self.df_widget._navigating_back
             self.df_widget._navigating_back = False
+
+            # ── Sync dropdown if leaving Flatten via any non-back navigation ──
+            if self.mode_selector.value == 'Flatten' and not navigating_back:
+                self._mode_changing = True
+                self.mode_selector.value = 'View'
+                self._mode_changing = False
  
             if self._scale_pending is not None:
                 # Forward scaled navigation
@@ -817,28 +829,56 @@ class DataFrameExplorer:
     #     # Deliberately no reload here – the caller owns the navigation.
         
     def on_equ_quant_unit_change(self, change):
-        """Apply the equ quant unit and refresh the display.
+        """Parse 'unit[, precision]' and apply equ quant settings.
 
-        Fires only when the user finishes typing (Enter or focus loss),
-        because the Text widget uses continuous_update=False.
+        Accepted formats
+        ────────────────
+        "cup"          → convert to cups, default precision (4 dp)
+        "g, 0.0"       → convert to grams, 1 decimal place
+        "1/8 tsp, 0"   → express as multiples of 1/8 tsp, 0 decimal places
+        "2 liter, 0.000" → multiples of 2-litre, 3 decimal places
+
+        The comma separates the pint quantity / unit from the precision
+        template.  The number of characters after the decimal point in the
+        template determines the decimal places shown (so "0" → 0, "0.0" → 1,
+        "0.00" → 2 …).  No comma → precision is left at the default (4).
         """
-        unit_str = change['new'].strip()
-        valid = False
-        if unit_str:
-            try:
-                ureg.Unit(unit_str)
-                valid = True
-            except Exception:
-                valid = False
+        raw = change['new'].strip()
+        unit_str  = raw
+        precision = None   # None → use default (4 dp)
+        valid     = False
+
+        if raw:
+            # ── Split "unit, precision_template" ─────────────────────────────
+            parts = raw.split(',', 1)
+            unit_str = parts[0].strip()
+
+            if len(parts) == 2:
+                prec_str = parts[1].strip()
+                # Count decimal places in the template string
+                if '.' in prec_str:
+                    precision = len(prec_str.split('.')[1])
+                else:
+                    precision = 0   # "0" with no dot → 0 decimal places
+
+            # ── Validate the unit/scale part with pint ───────────────────────
+            if unit_str:
+                try:
+                    Q_(unit_str)   # accepts "1/8 tsp", "2 liter", "cup", "g" …
+                    valid = True
+                except Exception:
+                    valid = False
 
         if valid:
             self.hide_columns = set(self.hide_columns) - {'equ quant'}
-            self.df_widget.equ_quant_unit = unit_str
+            self.df_widget.equ_quant_unit      = unit_str
+            self.df_widget.equ_quant_precision = precision
             self.equ_quant_input.style.text_color = self.defcolor
         else:
             self.hide_columns = set(self.hide_columns) | {'equ quant'}
-            self.df_widget.equ_quant_unit = None
-            self.equ_quant_input.style.text_color = 'red' if unit_str else self.defcolor
+            self.df_widget.equ_quant_unit      = None
+            self.df_widget.equ_quant_precision = None
+            self.equ_quant_input.style.text_color = 'red' if raw else self.defcolor
 
         self.df_widget.hide_columns = self.hide_columns
         if self.df_widget.last_lookup:

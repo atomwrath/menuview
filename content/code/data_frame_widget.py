@@ -28,6 +28,7 @@ class DataFrameWidget:
         self.trigger = trigger
         self.last_lookup = ''
         self.last_lookup = ''
+        self.equ_quant_precision = None
         self.equ_quant_unit = None              # target unit for "equ quant" column
         self.scale_factor = None                # current display scale ratio (float|None)
         self._pending_lookup_quantity = None    # set by on_lookup_click before trigger fires
@@ -68,7 +69,9 @@ class DataFrameWidget:
     def setdf(self, mylookup):
         self.last_lookup = mylookup
         mydf = self.cc.findframe(
-            mylookup, equ_quant_unit=self.equ_quant_unit
+            mylookup,
+            equ_quant_unit=self.equ_quant_unit,
+            equ_quant_precision=self.equ_quant_precision
         ).reset_index(drop=True).copy()
         self.df = mydf
         self.findtype()
@@ -144,21 +147,36 @@ class DataFrameWidget:
             try:
                 q = parse_quant(q_str)
                 if q is not None and hasattr(q, 'm') and q.m > 0:
-                    mydf.at[idx, 'quantity'] = f"{(q * scale):~.4f}"
+                    mydf.at[idx, 'quantity'] = f"{(q * scale):~.2f}"
             except Exception:
                 pass
- 
+
             # ── equ quant (skip blanks and "n/a") ────────────────────────────
             if 'equ quant' in mydf.columns:
                 eq_str = str(mydf.at[idx, 'equ quant'])
                 if eq_str not in ('', 'nan', 'n/a', 'None'):
                     try:
-                        eq = parse_quant(eq_str)
-                        if eq is not None and hasattr(eq, 'm') and eq.m > 0:
-                            mydf.at[idx, 'equ quant'] = f"{(eq * scale):~.4f}"
+                        # equ quant is stored as "value unit_string" (e.g. "120.0 g",
+                        # "384 1/8 tsp").  Extract the numeric part, scale it, reformat
+                        # using the stored precision (or 4 dp by default).
+                        import re as _re
+                        m = _re.match(r'^\s*([\d.]+)\s*(.*)', eq_str)
+                        if m:
+                            num  = float(m.group(1)) * scale
+                            unit = m.group(2).strip()
+                            prec = self.equ_quant_precision if self.equ_quant_precision is not None else 4
+                            mydf.at[idx, 'equ quant'] = f"{num:.{prec}f} {unit}".strip()
+                        else:
+                            # fallback: pint parse
+                            eq = parse_quant(eq_str)
+                            if eq is not None and hasattr(eq, 'm') and eq.m > 0:
+                                prec = self.equ_quant_precision if self.equ_quant_precision is not None else 4
+                                mydf.at[idx, 'equ quant'] = (
+                                    f"{(eq * scale).magnitude:.{prec}f} {eq.units:~}"
+                                )
                     except Exception:
                         pass
- 
+                    
             # ── cost ─────────────────────────────────────────────────────────
             if 'cost' in mydf.columns:
                 try:
@@ -176,19 +194,6 @@ class DataFrameWidget:
  
         return mydf
         
-    # def update_display(self):
-    #     self.grid.disabled = True
-    #     self.grid = self._create_grid()
-    #     with self.output:
-    #         self.output.clear_output(wait=True)
-    #         display(self.grid)
-
-    #     if (self.trigger != None):
-    #         if (self.df_type == 'recipe'):
-    #             self.trigger(self.df.iloc[0]['ingredient'])
-    #         elif (self.df_type == 'guide'):
-    #             self.trigger(self.df.loc[0]['nickname'])
-    # Modify update_display method to show progress
     def update_display(self):
         self.progress_bar.layout.visibility = 'visible'
         self.progress_bar.value = 0
@@ -389,9 +394,20 @@ class DataFrameWidget:
         def on_text_change(change, column, widget):
             
             def _update_df(df, row, match_columns, update_column, new_value):
-                condition = True
+                # Build a NaN-aware boolean mask so that rows where a match
+                # column contains NaN are handled correctly (NaN == NaN is
+                # always False in pandas, which silently breaks the lookup).
+                condition = pd.Series([True] * len(df), index=df.index)
                 for col in match_columns:
-                    condition &= (df[col] == row[col])
+                    val = row[col]
+                    try:
+                        val_is_nan = pd.isna(val)
+                    except (TypeError, ValueError):
+                        val_is_nan = False
+                    if val_is_nan:
+                        condition = condition & df[col].isna()
+                    else:
+                        condition = condition & (df[col] == val)
                 df.loc[condition, update_column] = new_value
                 
             # clear cost of each recipe containing ingredient
@@ -634,7 +650,7 @@ class DataFrameWidget:
                     newval = newval.strip()
                     # check valid conversion
                     convrs = parse_conversion(newval)
-                    if len(convrs) > 0:
+                    if len(convrs) > 0 or newval == '':
                         # set convrs
                         if self.df_type == 'recipe':
                             _update_df(self.cc.costdf, row, ['ingredient', 'item', 'quantity'], 'conversion', newval)

@@ -599,11 +599,10 @@ class CostCalculator:
         #    recipe_detail = pd.concat([recipe_detail, ihead, ilist], ignore_index=True)
             
         orderdf = pd.concat([orderdf, recipe_detail], ignore_index=True)
-            
         orderdf.to_csv(filename)
         
     
-    def add_equ_quant(self, row, target_unit=None):
+    def add_equ_quant(self, row, target_unit=None, precision=None):
         ''' Add equivalent quantity to a menu cost item.
  
         Parameters
@@ -625,14 +624,26 @@ class CostCalculator:
                 row['equ quant'] = 'n/a'
                 return row
             try:
-                # do_conversion handles ingredient-specific conversion factors
+                # Parse target_unit as a pint Quantity to support scaled units
+                # e.g. "1/8 tsp" → scale_mag=0.125, base_unit=tsp
+                # e.g. "cup"     → scale_mag=1,     base_unit=cup
+                # e.g. "2 liter" → scale_mag=2,     base_unit=liter
+                scale_q   = Q_(target_unit)
+                scale_mag = abs(float(scale_q.magnitude))
+                base_unit = scale_q.units
+
                 result = self.do_conversion(
                     row['ingredient'],
                     str(row['quantity']),
-                    f'1 {target_unit}'
+                    f'1 {base_unit}'
                 )
                 if result is not None:
-                    row['equ quant'] = f"{result:~.4f}"
+                    # Scale: how many target_unit quantities fit?
+                    scaled_value = result.to(base_unit).magnitude / scale_mag
+
+                    # Format with caller-specified precision, or default 4
+                    prec = int(precision) if precision is not None else 4
+                    row['equ quant'] = f"{scaled_value:.{prec}f} {target_unit}"
                 else:
                     row['equ quant'] = 'n/a'
             except Exception:
@@ -658,7 +669,7 @@ class CostCalculator:
                 row['equ quant'] = f"{q.to((1 / cpq).units):~.4f}"
         return row
     
-    def findframe(self, ingredient, equ_quant_unit=None):
+    def findframe(self, ingredient, equ_quant_unit=None, equ_quant_precision=None):
         ''' universal method to return the definition(s) of ingredient
  
         equ_quant_unit : str or None
@@ -672,7 +683,8 @@ class CostCalculator:
             if rentry is not None and not rentry.empty:
                 myselection = pd.concat([rentry, ilist], ignore_index=True)
                 myselection = myselection.apply(
-                    lambda row: self.add_equ_quant(row, equ_quant_unit), axis=1
+                    lambda row: self.add_equ_quant(row, equ_quant_unit, precision=equ_quant_precision),
+                    axis=1
                 )
                 myselection = reorder_columns(myselection, self.costdf_order)
             else:
