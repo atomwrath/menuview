@@ -18,6 +18,7 @@ class CostCalculator:
                'conversion', 'description', 'supplier', 'date')
         self.uni_g_easyorder = ('nickname', '$/quant', 'price', 'size', 'supplier', 'date', 'description', 'conversion')
         self.use_saved = False
+        self.conversion_errors: set = set()  # ingredients whose unit conversion failed
 
         def defcostpicker(cdf):
             return pick_recent_cost(cdf)
@@ -64,9 +65,11 @@ class CostCalculator:
             
             thisconv = list(convr)
             if isinstance(r['conversion'], str):
+                # Prioritise this row's own conversion, then append any others
+                # that come from sibling entries with the same nickname.
                 thisconv = [r['conversion']]
                 for c in convr:
-                    if not (c in convr):
+                    if c not in thisconv:       # ← was: if not (c in convr)
                         thisconv.append(c)
 
             if isinstance(price, str):
@@ -82,9 +85,26 @@ class CostCalculator:
                 myquant = Q_(f"1 {str(quant.units)}")
             if (myquant.m == 0):
                 myquant = Q_(f"0 {str(quant.units)}")
+                    
             else:
                 nextprice, myconv = quantity_cost_and_conv(price/quant, myquant, parse_unit_conversion(thisconv))
-                
+                if nextprice is None:
+                    # Build a readable hint about what conversion is missing
+                    recipe_unit  = str(myquant.units)
+                    purchase_unit = str((price/quant).units)
+                    available    = ', '.join(str(c) for c in thisconv) if thisconv else 'none'
+                    print(
+                        f"[conversion missing] '{myingr}': "
+                        f"recipe uses '{recipe_unit}' but is priced in '{purchase_unit}'. "
+                        f"Available conversions: [{available}]. "
+                        f"Fix: add e.g. '1 {recipe_unit} per N {purchase_unit}' "
+                        f"in the conversion field for '{myingr}'."
+                    )
+                    self.conversion_errors.add(myingr)
+                    nextprice, myconv = 0, 1
+                else:
+                    self.conversion_errors.discard(myingr)        
+            
             if (nextprice >= 0):
                 r['mycost'] = nextprice
                 r['myconversion'] = str(myconv)
@@ -240,8 +260,9 @@ class CostCalculator:
                             conv = parse_unit_conversion(recipe_entry['conversion'])
                             cost, myconv = quantity_cost_and_conv(
                                 recipe_cost/recipe_quant, myquant, conv)
-                            if (cost < 0):
+                            if cost is None or cost < 0:
                                 print(f'no conversion found, for {inick, iquant}')
+                                self.conversion_errors.add(inick)
                                 return 0
                             else:
                                 # We are done! save cost, and return
@@ -305,6 +326,10 @@ class CostCalculator:
                         recipe_quant = parse_quant(recipe_entry['quantity'])
                         conv = parse_unit_conversion(recipe_entry['conversion'])
                         mycost, myconv = quantity_cost_and_conv(cost/recipe_quant, myquant, conv)
+                        if mycost is None:
+                            print(f'no conversion found, for {inick, iquant}')
+                            self.conversion_errors.add(inick)
+                            mycost = 0
 
                         self.set_item_ingredient(myitem, inick, 'cost', mycost)
 
@@ -653,20 +678,26 @@ class CostCalculator:
         # ── Original behaviour: use natural unit from cost database ──────────
         if self.find_nick(row['ingredient']).empty:
             return row
-        cl = self.get_cost_df(row['ingredient'], row['quantity'])
-        q = parse_quant(row['quantity'])
-        if q.m <= 0:
-            return row
-        cpq = Q_(cl.iloc[0]['$/quantity'].replace('ct', 'count'))
-        conv = Q_(cl.iloc[0]['myconversion'].replace('ct', 'count'))
-        row['equ quant'] = ''
-        if type(q) in (int, float):
-            return row
-        elif q.dimensionality != (1 / cpq).dimensionality:
-            row['equ quant'] = f"{(q * conv).to_reduced_units().to(1 / cpq.units):~.4f}"
-        elif q.dimensionality == (1 / cpq).dimensionality:
-            if q.units != (1 / cpq).units:
-                row['equ quant'] = f"{q.to((1 / cpq).units):~.4f}"
+        try:
+            cl = self.get_cost_df(row['ingredient'], row['quantity'])
+            if cl.empty:
+                row['equ quant'] = 'n/a'
+                return row
+            q = parse_quant(row['quantity'])
+            if q.m <= 0:
+                return row
+            cpq = Q_(cl.iloc[0]['$/quantity'].replace('ct', 'count'))
+            conv = Q_(cl.iloc[0]['myconversion'].replace('ct', 'count'))
+            row['equ quant'] = ''
+            if type(q) in (int, float):
+                return row
+            elif q.dimensionality != (1 / cpq).dimensionality:
+                row['equ quant'] = f"{(q * conv).to_reduced_units().to(1 / cpq.units):~.4f}"
+            elif q.dimensionality == (1 / cpq).dimensionality:
+                if q.units != (1 / cpq).units:
+                    row['equ quant'] = f"{q.to((1 / cpq).units):~.4f}"
+        except Exception:
+            row['equ quant'] = 'n/a'
         return row
     
     def findframe(self, ingredient, equ_quant_unit=None, equ_quant_precision=None):
@@ -765,8 +796,20 @@ class CostCalculator:
         if q1.dimensionality == q2.dimensionality:
             return q1.to(q2)
         
+        # results = list(self.find_nick(item)['conversion'].dropna().unique())
+        # convs = list(parse_unit_conversion(results))
         results = list(self.find_nick(item)['conversion'].dropna().unique())
+
+        # Also check the recipe header row — covers the case where `item` is
+        # itself a recipe (e.g. "simple syrup" used as an ingredient elsewhere).
+        recipe_entry = self.get_recipe_entry(item)
+        if not recipe_entry.empty:
+            rc = recipe_entry['conversion'].dropna()
+            rc = rc[rc.astype(str).str.strip() != '']
+            results += list(rc.unique())
+
         convs = list(parse_unit_conversion(results))
+        
         partialconv = []
         # look for suitable conversion
         for nextconv in convs:

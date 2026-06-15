@@ -208,24 +208,46 @@ def quantity_cost_and_conv(cpq, myq, conversion):
         cpq: (cost per quantity from order guide)
         if necessary use conversion to get compatible units
         example conversion: <1 cup>/<120 g>
+        Supports chaining up to two conversions (e.g. count → weight → volume).
     '''
-        
-    cost = (cpq*myq).to_reduced_units()
-    # cost should be dimensionless if compatible units were used
-    if not cost.dimensionless:
-        # see if conversion or it's reciprical is a valid conversion
-        for testconv in conversion:
-            if (cost/testconv).dimensionless:
-                cost = (cost/testconv).to_reduced_units()
-                return cost.m, 1/testconv
-            elif (cost*testconv).dimensionless:
-                cost = (cost*testconv).to_reduced_units()
-                return cost.m, testconv
-        print(f"can't convert {cpq}, {myq}, {testconv}")
-        return 0, 1
-    # cost is dimensionless thus we have the cost
-    else:
+    cost = (cpq * myq).to_reduced_units()
+    if cost.dimensionless:
         return cost.m, 1
+
+    # Materialise the conversion list so we can iterate it twice (generators are exhausted after one pass)
+    convlist = list(conversion)
+    if not convlist:
+        maybeprint(f"can't convert {cpq}, {myq} — no conversions available")
+        return None, None
+
+    # partials: (intermediate_cost, accumulated_myconv) after one conversion step
+    # myconv is the factor such that  myq * myconv  gives qty in purchase-unit terms
+    partials = []
+
+    # ── Pass 1: try each conversion once ─────────────────────────────────────
+    for tc in convlist:
+        for c_cost, c_conv in ((cost / tc, 1 / tc), (cost * tc, tc)):
+            try:
+                r = c_cost.to_reduced_units()
+                if r.dimensionless:
+                    return r.m, c_conv
+                partials.append((r, c_conv))
+            except Exception:
+                pass
+
+    # ── Pass 2: chain two conversions (e.g. count → weight → volume) ─────────
+    for (p_cost, p_conv) in partials:
+        for tc in convlist:
+            for c_cost, c_conv in ((p_cost / tc, p_conv / tc), (p_cost * tc, p_conv * tc)):
+                try:
+                    r = c_cost.to_reduced_units()
+                    if r.dimensionless:
+                        return r.m, c_conv
+                except Exception:
+                    pass
+
+    maybeprint(f"can't convert {cpq}, {myq}")
+    return None, None
     
 def parse_conversion(conv_str):
     ''' create a conversion factor from a given string conv_str 

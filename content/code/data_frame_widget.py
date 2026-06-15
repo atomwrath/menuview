@@ -237,38 +237,6 @@ class DataFrameWidget:
             self.df_type = None
         return self.df_type
         
-    # def _create_grid(self):
-    #     # Create a list to store the widgets
-    #     items = []
-        
-    #     self.num_cols = len(self.df.columns) + 1 # extra one for button
-    #     # Create a GridBox to display the widgets
-
-    #     # Setup column names
-    #     # add blank label in place of a button
-        
-    #     for i in range(self.num_cols - len(self.df.columns)):
-    #         items.append(widgets.Label(value='', layout=self.getlayout()))
-        
-    #     # add column labels for each column at top of interface
-    #     for col in self.df.columns:
-    #         items.append(widgets.Label(value=col, layout=self.getlayout(col)))
-            
-    #     # if we have a recipe df, add row at end for ability to add to ingredient to recipe
-    #     if self.df_type == 'recipe':
-    #         new_row = pd.DataFrame({column: [''] for column in self.df.columns})
-    #         # set blank row up as a member of the recipe
-    #         new_row['item'] = self.df.iloc[0]['ingredient']
-    #         self.df = pd.concat([self.df, new_row], ignore_index=True)
-
-    #     # Create interface for each row of the DataFrame
-    #     for index, row in self.df.iterrows():
-    #         self.create_row(items, index, row)
-        
-    #     grid = widgets.GridBox(items, layout=widgets.Layout(grid_template_columns=f"repeat({self.num_cols}, {self.width})"))
-    #     # set the width of the first column to 100 pixels
-    #     grid.layout.grid_template_columns = f"{self.width} {'px '.join([str(self.column_width[x]) for x in self.df.columns])}px"
-    #     return grid
     
     # Modify _create_grid method to update the progress bar
     def _create_grid(self):
@@ -644,6 +612,23 @@ class DataFrameWidget:
                     self.update_display()
                     # update mention display?
                     
+            # elif column == 'conversion':
+            #     if (self.df_type == 'guide') or (self.df_type == 'recipe'):
+            #         row = self.df.iloc[index]
+            #         newval = newval.strip()
+            #         # check valid conversion
+            #         convrs = parse_conversion(newval)
+            #         if len(convrs) > 0 or newval == '':
+            #             # set convrs
+            #             if self.df_type == 'recipe':
+            #                 _update_df(self.cc.costdf, row, ['ingredient', 'item', 'quantity'], 'conversion', newval)
+            #                 _clear_costs(row['ingredient'])
+            #                 self.setdf(row['ingredient'])
+            #             else:
+            #                 _update_df(self.cc.uni_g, row, ['nickname', 'description', 'size', 'supplier'], 'conversion', newval)
+            #                 _clear_costs(row['nickname'])
+            #                 self.setdf(row['nickname'])
+            #             self.update_display()
             elif column == 'conversion':
                 if (self.df_type == 'guide') or (self.df_type == 'recipe'):
                     row = self.df.iloc[index]
@@ -651,6 +636,11 @@ class DataFrameWidget:
                     # check valid conversion
                     convrs = parse_conversion(newval)
                     if len(convrs) > 0 or newval == '':
+                        # Valid (or cleared) — remove any conversion error flag and border
+                        ingredient_key = row.get('ingredient', row.get('nickname', ''))
+                        conv_errors = getattr(self.cc, 'conversion_errors', set())
+                        conv_errors.discard(ingredient_key)
+                        widget.layout.border = ''
                         # set convrs
                         if self.df_type == 'recipe':
                             _update_df(self.cc.costdf, row, ['ingredient', 'item', 'quantity'], 'conversion', newval)
@@ -661,6 +651,9 @@ class DataFrameWidget:
                             _clear_costs(row['nickname'])
                             self.setdf(row['nickname'])
                         self.update_display()
+                    else:
+                        # Invalid format typed — show red border immediately as feedback
+                        widget.layout.border = '2px solid red'
         
         # add button based on what type of dataframe we have
         if self.df_type:
@@ -681,7 +674,18 @@ class DataFrameWidget:
             
         # Create a Text widget for each cell in the row
         for col in self.df.columns:
+            # is_disabled = (col not in self.enabled_columns) or (self.df_type == 'mentions' and col == 'ingredient')
             is_disabled = (col not in self.enabled_columns) or (self.df_type == 'mentions' and col == 'ingredient')
+
+            # Recipe conversion override:
+            #   • Header row (item == 'recipe') → editable only in Edit mode,
+            #     i.e. when 'conversion' is present in enabled_columns.
+            #   • Ingredient rows               → never editable here; use the Guide.
+            if col == 'conversion' and self.df_type == 'recipe':
+                if row['item'] == 'recipe':
+                    is_disabled = 'conversion' not in self.enabled_columns
+                else:
+                    is_disabled = True
             # hide cell visibility
             hide = False
             # Simplifying value assignment and handling for 'myval'
@@ -733,6 +737,12 @@ class DataFrameWidget:
                             disabled=is_disabled, 
                             continuous_update=False
                         )
+                        # Highlight conversion cell when a unit conversion is missing
+                        if col == 'conversion' and not is_disabled:
+                            ingredient_key = row.get('ingredient', row.get('nickname', ''))
+                            conv_errors = getattr(self.cc, 'conversion_errors', set())
+                            if ingredient_key and ingredient_key in conv_errors:
+                                cell_widget.layout.border = '2px solid red'
                         cell_widget.observe(lambda change, col=col, cell_widget=cell_widget: on_text_change(change, col, cell_widget), 'value')
 
 
