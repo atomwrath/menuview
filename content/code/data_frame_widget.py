@@ -39,7 +39,9 @@ class DataFrameWidget:
         self.search_history = []  # Add this line for tracking history
         self.backbutton = widgets.Button(description='Back', disabled=True)
         self.backbutton.on_click(self.on_back_click) 
-        self.cost_multipliers = [3.0, 3.5]
+        self.cost_multipliers = [3.0]
+        self.scale_qty_editable    = False   # True in View / Flatten modes
+        self.scale_quantity_callback = None  # set by DataFrameExplorer
         
         # Add progress bar for loading
         self.progress_bar = widgets.IntProgress(
@@ -391,6 +393,11 @@ class DataFrameWidget:
                 
             if column == 'quantity':
                 if self.df_type == 'recipe':
+                    # ── View / Flatten: header-row quantity → scale, don't edit DB ──
+                    if index == 0 and self.scale_qty_editable and self.scale_quantity_callback is not None:
+                        self.scale_quantity_callback(newval, widget)
+                        return
+                    # ── Edit mode: normal DB update follows unchanged ─────────────
                     recipename = self.df.iloc[0]['ingredient']
                     # only update as recipe if in recipe mode
                     # check that we are editting a quantity for a valid ingredient
@@ -686,6 +693,14 @@ class DataFrameWidget:
                     is_disabled = 'conversion' not in self.enabled_columns
                 else:
                     is_disabled = True
+                    
+            # View/Flatten scaling override:
+            # Make the header-row quantity cell editable so the user can type a
+            # new yield and have the recipe rescaled to match.
+            if (col == 'quantity' and self.df_type == 'recipe'
+                    and row['item'] == 'recipe' and self.scale_qty_editable):
+                is_disabled = False
+                
             # hide cell visibility
             hide = False
             # Simplifying value assignment and handling for 'myval'

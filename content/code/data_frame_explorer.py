@@ -265,6 +265,7 @@ class DataFrameExplorer:
         self.df_widget = DataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=self.enabled_columns, 
                                         hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
         
+        self.df_widget.scale_quantity_callback = self._on_view_scale_quantity
         # Get reference to the back button
         self.backbutton = self.df_widget.backbutton
         self.progress_bar = self.df_widget.progress_bar
@@ -372,6 +373,7 @@ class DataFrameExplorer:
             self.df_widget.scale_stack  = [None] * len(self.df_widget.search_history)
             self._scale_pending = None
             self.edit_mode = True
+            self.df_widget.scale_qty_editable = False
             self.enabled_columns = self.all_enabled_columns.copy()
             for w in self.editor_widgets.values():
                 w.layout.display = 'flex'
@@ -382,6 +384,7 @@ class DataFrameExplorer:
 
         elif new_mode == 'View':
             self._activate_view_mode()
+            self.df_widget.scale_qty_editable = True
             if self.df_widget.last_lookup:
                 self.df_widget.lookup_name(self.df_widget.last_lookup)
                 self.df_widget.update_display()
@@ -391,6 +394,7 @@ class DataFrameExplorer:
             # no pre-existing scale to retain).
             if self.edit_mode:
                 self._activate_view_mode()
+            self.df_widget.scale_qty_editable = True 
             # If coming from View, scale_factor is preserved automatically.
             self._show_flattened_recipe()
 
@@ -415,7 +419,76 @@ class DataFrameExplorer:
         for w in self.editor_widgets.values():
             w.layout.display = 'none'
         self.df_widget.enabled_columns = self.enabled_columns
+        self.df_widget.scale_qty_editable = True 
         # Deliberately no reload — the caller owns navigation.
+        
+    def _on_view_scale_quantity(self, new_qty_str, widget):
+        """Scale the displayed recipe to the quantity the user typed.
+ 
+        Called by DataFrameWidget.on_text_change when the header-row
+        quantity cell is edited in View or Flatten mode.  The widget
+        reference is passed so we can colour it red on bad input without
+        needing an extra state flag.
+ 
+        Validation
+        ──────────
+        • Must parse as a pint quantity (parse_quant succeeds).
+        • Must share the dimensionality of the recipe yield, OR a
+          do_conversion path must exist (e.g. volume ↔ weight).
+        • Resulting scale factor must be > 0.
+ 
+        On failure  : widget text turns red; display unchanged.
+        On success  : widget text reset; scale_factor updated; display reloaded.
+        """
+        item = self.df_widget.last_lookup
+        if not item:
+            return
+ 
+        recipe_entry = self.cc.get_recipe_entry(item)
+        if recipe_entry.empty:
+            return
+ 
+        recipe_yield_str = str(recipe_entry.squeeze()['quantity']).strip()
+        input_str = new_qty_str.strip()
+ 
+        if not input_str:
+            return
+ 
+        try:
+            ry = parse_quant(recipe_yield_str)
+            pq = parse_quant(input_str)
+ 
+            if pq is None or ry is None or ry.m == 0:
+                widget.style.text_color = 'red'
+                return
+ 
+            if pq.dimensionality == ry.dimensionality:
+                scale = float((pq / ry).to_reduced_units().m)
+            else:
+                # Try ingredient-specific conversion (e.g. cups of batter → g)
+                converted = self.cc.do_conversion(item, input_str, recipe_yield_str)
+                if converted is None:
+                    widget.style.text_color = 'red'
+                    return
+                scale = float((converted / ry).to_reduced_units().m)
+ 
+            if scale <= 0:
+                widget.style.text_color = 'red'
+                return
+ 
+            # ── Valid ─────────────────────────────────────────────────────────
+            widget.style.text_color = self.defcolor
+            self.df_widget.scale_factor = scale
+ 
+            if self.mode_selector.value == 'Flatten':
+                self._show_flattened_recipe()
+            else:
+                self.df_widget.lookup_name(item)
+                self.df_widget.update_display()
+ 
+        except Exception as exc:
+            print(f'[view_scale] {exc}')
+            widget.style.text_color = 'red'
 
         
     def _sort_flattened(self, df):
