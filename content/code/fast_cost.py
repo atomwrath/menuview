@@ -346,3 +346,19 @@ class FastCostMixin:
         self._ensure_fresh()
         for name, cost in self._memo.items():
             self._emit("recipe", name, cost)
+
+    def can_lookup(self, name):
+        """True if `name` has a recipe entry OR is a guide ingredient.
+
+        O(1) dict lookup against maps already built by _build_maps /
+        _ensure_guide_index. Use this instead of `not cc.findframe(name).empty`
+        in any hot path (e.g. create_lookup_button) — findframe triggers
+        add_equ_quant + get_cost_df and is ~40ms per call.
+        """
+        self._ensure_fresh()
+        self._ensure_guide_index()
+        return (
+            name in self._recipe_yield
+            or name in self._children
+            or name in self._guide_by_nick
+        )

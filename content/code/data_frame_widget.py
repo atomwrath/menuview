@@ -302,9 +302,8 @@ class DataFrameWidget:
         butlist = []
         
         def create_lookup_button():
-            # check there is a valid thing to lookup
             button = widgets.Button(description=f'lookup', layout=self.getlayout())
-            if self.cc.findframe(row['ingredient']).empty:
+            if not self.cc.can_lookup(row['ingredient']):
                 button.disabled = True
             button.tag = index  # Store the row index in the button's 'tag' attribute
             button.on_click(self.on_lookup_click)
