@@ -832,62 +832,31 @@ class CostCalculator:
                         if newresult.dimensionality == q2.dimensionality:
                             return newresult.to(q2.units)
         return None
-
-    # def flatten_recipe(self, item, quant):
-    #     '''
-    #         flatten the recipe for quant of item (all ingredients of the recipe
-    #         are simple ingredients in order guide
-
-    #         return dataframe with all ingredients and quantities
-    #     '''
-    #     ratio = parse_quant(quant) / parse_quant(self.get_recipe_entry(item)['quantity'].squeeze())
-    #     flatten_df = pd.DataFrame()
-    #     # flatten to simple ingredients
-    #     for i, row in self.item_list(item).iterrows():
-    #         if self.is_ingredient(row['ingredient']) or self.item_list(row['ingredient']).empty:
-    #             row['quantity'] = str(parse_quant(row['quantity']) * ratio.to_reduced_units().m)
-    #             flatten_df = pd.concat([flatten_df, pd.DataFrame([row])], ignore_index=True)
-    #         else:
-    #             ndf = self.flatten_recipe(row['ingredient'], str(parse_quant(row['quantity']) * ratio.to_reduced_units().m))
-    #             flatten_df = pd.concat([flatten_df, ndf], ignore_index=True)
-                
-    #     # consolidate repeated ingredient
-    #     reduced_df = pd.DataFrame()
-    #     for ing in flatten_df['ingredient'].unique():
-    #         comb = flatten_df.loc[flatten_df['ingredient'] == ing]
-    #         allquants = comb['quantity'].squeeze()
-    #         #|print(ing)
-    #         if isinstance(allquants, str):
-    #             reduced_df = pd.concat([reduced_df, comb], ignore_index=True)
-    #         else:
-    #             single_df = comb.iloc[0].copy()
-    #             totalquant = 0
-    #             for q in allquants:
-    #                 if totalquant == 0:
-    #                     totalquant = parse_quant(q)
-    #                 else:
-    #                     nextq = parse_quant(q)
-    #                     if totalquant.dimensionality == nextq.dimensionality:
-    #                         totalquant = totalquant + parse_quant(q)
-    #                     else:
-    #                         #print(f'{totalquant} + {nextq}')
-    #                         totalquant = totalquant + self.do_conversion(ing, nextq, totalquant)
-    #             allquants = str(totalquant.to_reduced_units())
-    #             single_df['quantity'] = allquants
-    #             reduced_df = pd.concat([reduced_df, pd.DataFrame([single_df])])
-    #         #print(f"{ing}, {allquants}")
-            
-    #     return reduced_df
     
     def flatten_recipe(self, item, quant):
         '''
         Flatten the recipe for quant of item so all ingredients are simple
         guide entries.  Returns a DataFrame with consolidated ingredients.
         '''
-        ratio = parse_quant(quant) / parse_quant(
-            self.get_recipe_entry(item)['quantity'].squeeze()
-        )
-        ratio_scalar = float(ratio.to_reduced_units().m)
+        recipe_entry = self.get_recipe_entry(item)
+        base_yield_str = str(recipe_entry['quantity'].squeeze())
+
+        pq = parse_quant(quant)
+        ry = parse_quant(base_yield_str)
+
+        if pq.dimensionality == ry.dimensionality:
+            ratio_scalar = float((pq / ry).to_reduced_units().m)
+        else:
+            # Units don't match (e.g. parent asks for "1/2 cup" but this
+            # sub-recipe's own yield is recorded in grams) — use the
+            # ingredient's real conversion factor instead of a bogus ratio.
+            converted = self.do_conversion(item, quant, base_yield_str)
+            if converted is None:
+                raise ValueError(
+                    f'No conversion found for "{item}": {quant} vs {base_yield_str}'
+                )
+            ratio_scalar = float((converted / ry).to_reduced_units().m)
+
         flatten_df = pd.DataFrame()
 
         for i, row in self.item_list(item).iterrows():

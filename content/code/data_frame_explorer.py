@@ -595,6 +595,11 @@ class DataFrameExplorer:
         # ── Determine yield quantity (with optional scale) ────────────────────
         recipe_yield_str = str(recipe_entry.squeeze()['quantity']).strip()
         scale = self.df_widget.scale_factor
+
+        # quant_str is used only for the header-row display; it is NOT passed to
+        # flatten_recipe.  Passing a pint-formatted scaled string (e.g. "6.00 serving"
+        # instead of "12 servings") causes a unit-mismatch when flatten_recipe
+        # re-derives ratio = quant / recipe_yield, producing wrong quantities and costs.
         if scale is not None:
             try:
                 quant_str = f"{(parse_quant(recipe_yield_str) * scale):~.2f}"
@@ -606,9 +611,10 @@ class DataFrameExplorer:
         # Ensure ingredient costs are current before flattening
         self.cc.recipe_cost(item)
 
-        # ── Flatten ───────────────────────────────────────────────────────────
+        # ── Flatten at ratio=1 (original yield) ──────────────────────────────
+        # Scale is applied to the result below, mirroring _apply_scaling in view mode.
         try:
-            flat_df = self.cc.flatten_recipe(item, quant_str)
+            flat_df = self.cc.flatten_recipe(item, recipe_yield_str)
         except Exception as exc:
             with self.dfdisplay:
                 self.dfdisplay.clear_output(wait=True)
@@ -623,6 +629,25 @@ class DataFrameExplorer:
 
         flat_df = flat_df.copy()
 
+        # ── Apply scale factor (mirrors DataFrameWidget._apply_scaling) ───────────
+        # Scaling quantities and costs here instead of inside flatten_recipe avoids
+        # the pint unit-abbreviation mismatch that caused wrong values.
+        if scale is not None and abs(scale - 1.0) > 1e-9:
+            def _scale_qty(q):
+                try:
+                    pq = parse_quant(str(q))
+                    if pq is not None and hasattr(pq, 'm') and pq.m > 0:
+                        return f"{(pq * scale):~.2f}"
+                except Exception:
+                    pass
+                return q
+
+            flat_df['quantity'] = flat_df['quantity'].apply(_scale_qty)
+            if 'cost' in flat_df.columns:
+                flat_df['cost'] = flat_df['cost'].apply(
+                    lambda c: float(c) * scale
+                    if pd.notna(c) and str(c) not in ('', 'nan') else c
+                )
         # ── Add equ quant BEFORE normalising ──────────────────────────────────
         # add_equ_quant must receive the original quantity strings ("1/8 tsp",
         # "2 cup", …) — not the display-rounded "0.00 ml" that normalisation
@@ -749,27 +774,17 @@ class DataFrameExplorer:
         parent_quantity = self.df_widget._pending_lookup_quantity
         self.df_widget._pending_lookup_quantity = None   # consume immediately
         self._scale_pending = None                       # default: no scaling
- 
-        if parent_quantity is not None:
+
+        # Edit mode: stay in Edit, no auto-switch, no auto-scale.
+        if parent_quantity is not None and not self.edit_mode:
             scale = self._compute_scale_factor(iname, parent_quantity)
             if scale is not None:
-                # Auto-switch to view mode (scaling never applies in edit mode)
+                # Auto-switch to view mode and scale (View mode only)
                 self._activate_view_mode()
                 self._scale_pending = scale
- 
+
         self.searchinput.value = iname
         
-    # def update_search(self, change):
-    #     if change['new'] in self.allvals:
-    #         change['owner'].style.text_color = self.defcolor
-    #         iname = change['new']
-
-    #         self.df_widget.lookup_name(iname)
-    #         self.df_widget.update_display()
-    #         self.update_mentions(iname)
-
-    #     else:
-    #         change['owner'].style.text_color = 'red'
     
     def update_search(self, change):
         '''Respond to searchinput value changes (user typing or trigger_update).
@@ -829,8 +844,11 @@ class DataFrameExplorer:
     def set_cost_multipliers(self, change):
         self.df_widget.cost_multipliers = change['new']
         if (self.df_widget.df_type == 'recipe'):
-            self.df_widget.lookup_name(self.df_widget.last_lookup)
-            self.df_widget.update_display()
+            if self.mode_selector.value == 'Flatten':
+                self._show_flattened_recipe()
+            else:
+                self.df_widget.lookup_name(self.df_widget.last_lookup)
+                self.df_widget.update_display()
         
     def hide_col(self, change, col):
         ''' set a column to hide or not
