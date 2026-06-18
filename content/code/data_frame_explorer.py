@@ -21,9 +21,9 @@ class DataFrameExplorer:
         self.excel_filename = 'amc_menu_database.xlsx'
         
         # Store original enabled columns for switching between modes
-        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'saved cost', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number']
+        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number']
         self.enabled_columns = self.all_enabled_columns.copy()
-        self.hide_columns = ['note', 'conversion', 'saved cost', 'equ quant', 'menu price']
+        self.hide_columns = ['note', 'conversion', 'equ quant', 'menu price']
         self.cc = cc
         self.cost_select_method = {'recent': pick_recent_cost, 
                                 'maximum': pick_max_cost, 
@@ -113,26 +113,9 @@ class DataFrameExplorer:
             _confirm_row.layout.display = 'none'
 
         def _reset_to_blank():
-            """Replace the current in-memory database with a fresh, empty one.
-
-            costdf must use the *runtime* column layout that read_from_xlsx produces,
-            not the on-disk layout stored in cost_columns:
-            • 'cost' (on-disk)  is renamed → 'saved cost'  (user-set price)
-            •  a new 'cost' column is added for computed/calculated values
-
-            Using the runtime layout means create_recipe / findframe work correctly
-            on the blank database, and write_cc can find 'saved cost' when saving.
-            """
+            """Replace the current in-memory database with a fresh, empty one."""
             blank = CostCalculator()
-            # Runtime costdf columns: drop 'cost' from the serialisation schema,
-            # then append 'saved cost' and 'cost' in the same order read_from_xlsx uses.
-            runtime_cost_cols = (
-                [c for c in blank.cost_columns if c != 'cost']
-                + ['saved cost', 'cost']
-            )
-            # Produces: ['item', 'ingredient', 'quantity', 'conversion', 'note',
-            #            'menu price', 'saved cost', 'cost']
-            blank.costdf = pd.DataFrame(columns=runtime_cost_cols)
+            blank.costdf = pd.DataFrame(columns=blank.cost_columns)
             blank.uni_g  = pd.DataFrame(columns=blank.guide_columns)
             # Update the shared cc in-place so df_widget / mdf_widget keep their
             # existing reference to the same object.
@@ -242,15 +225,6 @@ class DataFrameExplorer:
  
         self.hide_toggleVBox = widgets.HBox(hide_toggles)
 
-        # use saved cost check box
-        usesaved = widgets.Checkbox(
-            value=False,
-            description='Use saved cost',
-            disabled=False,
-            indent=False
-        )
-        usesaved.observe(self.usesaved, names='value')
-
         # set cost_picker
         cost_selection_widget = widgets.ToggleButtons(
             options=list(self.cost_select_method.keys()),
@@ -287,7 +261,7 @@ class DataFrameExplorer:
         # Modify top display to include menu buttons and back button
         topdisplay = widgets.VBox([
             self.menubutton_hbox,
-            widgets.HBox([self.backbutton, self.searchinput, copybutton, usesaved]), 
+            widgets.HBox([self.backbutton, self.searchinput, copybutton]), 
             self.dfdisplay
         ], layout={'border': '2px solid green'})
         
@@ -978,16 +952,6 @@ class DataFrameExplorer:
             else:
                 self.df_widget.lookup_name(self.df_widget.last_lookup)
                 self.df_widget.update_display()
-
-    def usesaved(self, change):
-        # set cc to use saved cost depending on user checkbox
-        
-        self.cc.use_saved = change['new']
-        
-        # recompute all?
-        self.cc.costdf['cost'] = 0            
-        self.df_widget.lookup_name(self.df_widget.last_lookup)
-        self.df_widget.update_display()
         
     # def update_mentions(self, iname):
     #     self.mdf_widget.search_name(iname)

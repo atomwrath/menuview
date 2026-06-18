@@ -17,7 +17,6 @@ class CostCalculator:
         self.uni_g_order = ('nickname',  'price', 'unit', 'size', '$/quant',
                'conversion', 'description', 'supplier', 'date')
         self.uni_g_easyorder = ('nickname', '$/quant', 'price', 'size', 'supplier', 'date', 'description', 'conversion')
-        self.use_saved = False
         self.conversion_errors: set = set()  # ingredients whose unit conversion failed
 
         def defcostpicker(cdf):
@@ -135,10 +134,7 @@ class CostCalculator:
         return recipe_entry
 
     def set_recipe_entry(self, inick, column_name, value):
-        ''' set a value (cost, saved cost, quantity....) for a recipe entry
-            column_name (column to set) value (value to set)
-            recipe entrys are (should be) unique
-        '''
+        ''' set a value (cost, quantity....) for a recipe entry'''
         self.costdf.loc[(self.costdf['item'] == 'recipe') & (self.costdf['ingredient'] == inick),
             column_name] = value
         
@@ -189,67 +185,30 @@ class CostCalculator:
     def item_cost(self, myitem, inick):
         ''' calulate the cost given an item, nickname and quantity
         '''
-        def lookup(mycolumn):
-            return self.costdf.loc[(self.costdf['item'] == myitem) & (self.costdf['ingredient'] == mynick), mycolumn].squeeze()
-            
-        def getsaved(myitem, mynick):
-            return self.costdf.loc[
-                (self.costdf['item'] == myitem) &
-                (self.costdf['ingredient'] == mynick), 'saved cost'
-            ].squeeze()
-
         inick = inick.strip()
         myitem = myitem.strip()
         myrow = self.get_item_ingredient(myitem, inick).squeeze()
         iquant = myrow['quantity']
-        # check current line
-        # check if we should use saved cost
-        savedcost = getsaved(myitem, inick)
-        if savedcost and float(savedcost) >= 0:
-            savedcost = float(savedcost)
-        else:
-            savedcost = -1
 
-            
-        if (self.use_saved and (savedcost >= 0)):
-            self.set_item_ingredient(myitem, inick, 'cost', savedcost)
-            return savedcost
-            
         results = self.find_nick(inick)
         cost = 0
         if results.empty:
-            # check recipe location for saved cost
-            # look up item, ingredient
+            # look up item, ingredient as a recipe
             recipe_entry = self.get_recipe_entry(inick)
 
             if recipe_entry.empty: # no recipe found
-                # use saved cost if it exists
-                if (savedcost >= 0):
-                    self.set_item_ingredient(myitem, inick, 'cost', savedcost)
-                    return savedcost
-                else:
-                    print(f"!!!unknown recipe! {myitem}, {inick}, {iquant}")
-                    return 0
+                print(f"!!!unknown recipe! {myitem}, {inick}, {iquant}")
+                return 0
             else: # a recipe was found
                 if len(recipe_entry) > 1:
                     print(f'mulitple recipes found for {inick}')
                 recipe_entry = recipe_entry.squeeze()
-                recipe_cost = 0
-                
-                # use user defined cost if it exists
-                if self.use_saved and float(recipe_entry['saved cost']) > 0:
-                    recipe_cost = float(recipe_entry['saved cost'])
-                else:
-                    # use previous calculation
-                    recipe_cost = float(recipe_entry['cost'])
-                    
+                recipe_cost = float(recipe_entry['cost'])
+
                 if (recipe_cost > 0):
                     myquant = parse_quant(iquant)
-                    #myquant = Q_(iquant.replace('ct', 'count'))
-                    #recipe_quant = Q_((recipe_entry['quantity']).replace('ct', 'count'))
                     recipe_quant = parse_quant(recipe_entry['quantity'])
-                    
-                        
+
                     # if my quantity and recipe quantity are of same dimensionality
                     if (myquant.dimensionality == recipe_quant.dimensionality):
                         cost = recipe_cost * (myquant/recipe_quant).to_reduced_units().m
@@ -268,7 +227,7 @@ class CostCalculator:
                                 # We are done! save cost, and return
                                 self.set_item_ingredient(myitem, inick, 'cost', cost)
                                 return cost
-                                
+
                         else:
                             print(f'no conversion found, for {inick, iquant}')
                             return 0
@@ -282,43 +241,23 @@ class CostCalculator:
                             subnick = subitem['ingredient']
                             subquant = subitem['quantity']
                             subcost = 0
-                            
-                            # first try to use saved cost
-                            subsaved = subitem['saved cost']
-                            if subsaved and (float(subsaved) >= 0):
-                                subsaved = float(subsaved)
-                            else:
-                                subsaved = -1
-                            #try:
-                            #    subsaved = float(subitem['saved cost'])
-                            #except:
-                            #    subsaved = -1
 
-                            # first see if we are using a saved cost
-                            if (self.use_saved) and (subsaved >= 0):
-                                subcost = subsaved
-                                # set cost of sub item
-                                self.set_item_ingredient(inick, subnick, 'cost', subcost)
                             # look for an already computed cost
-                            elif float(subitem['cost']) > 0:
+                            if float(subitem['cost']) > 0:
                                 subcost = float(subitem['cost'])
                             # otherwise next compute the cost
                             else:
                                 subcost = self.item_cost(inick, subnick)
                                 if (subcost > 0):
-                                    #subcost = float(subcost)
                                     pass
                                 else:
-                                    if (subsaved >= 0):
-                                        subcost = subsaved
-                                    else:
-                                        subcost = 0
-                                        if parse_quant(subquant).m != 0:
-                                            print(f'no cost!, {subnick}, {subquant}')
+                                    subcost = 0
+                                    if parse_quant(subquant).m != 0:
+                                        print(f'no cost!, {subnick}, {subquant}')
                                 self.set_item_ingredient(inick, subnick, 'cost', subcost)
 
                             cost = cost + subcost
-                        
+
                         # need take fraction of the cost
                         # if we are looking for ct (count) quantity
 
@@ -334,14 +273,12 @@ class CostCalculator:
                         self.set_item_ingredient(myitem, inick, 'cost', mycost)
 
                         # if this is a recipe update full recipe cost
-                        if not (self.costdf.loc[(self.costdf['item'] == 'recipe') 
-                                       & (self.costdf['ingredient'] == inick)]).empty:
-                            self.costdf.loc[(self.costdf['item'] == 'recipe') 
-                                       & (self.costdf['ingredient'] == inick), 'cost'] = cost
+                        if not (self.costdf.loc[(self.costdf['item'] == 'recipe')
+                                    & (self.costdf['ingredient'] == inick)]).empty:
+                            self.costdf.loc[(self.costdf['item'] == 'recipe')
+                                    & (self.costdf['ingredient'] == inick), 'cost'] = cost
                         return mycost
-                    
-                    # check if quants are equal (above)
-                
+
         else:
             mycost = self.get_simple_ingredient_cost(inick, iquant)
             self.set_item_ingredient(myitem, inick, 'cost', mycost)
@@ -379,10 +316,7 @@ class CostCalculator:
         rentry = self.get_recipe_entry(rname)
         if not rentry.empty:
             rentry = rentry.squeeze()
-            if (self.use_saved and rentry['saved cost'] >= 0):
-                self.set_recipe_entry(rname, 'cost', rentry['saved cost'])
-            else:
-                self.item_cost('recipe', rentry['ingredient'])
+            self.item_cost('recipe', rentry['ingredient'])
         
     def item_list(self, iname):
         ''' dataframe of children
@@ -451,8 +385,12 @@ class CostCalculator:
         self.costdf['item'] = pd.Categorical(self.costdf['item'])
         self.costdf['ingredient'] = pd.Categorical(self.costdf['ingredient'])
         
-        # rename cost column so it is separate from, (not overwritten by) calculations
-        self.costdf = self.costdf.rename(columns={'cost': 'saved cost'})
+        # 'cost' always holds the calculated value now; reset it so it's
+        # recomputed rather than trusting whatever was last written to disk.
+        # Defensive: drop a legacy 'saved cost' column if an older file/in-memory
+        # state still happens to have one, so it doesn't linger unused.
+        if 'saved cost' in self.costdf.columns:
+            self.costdf = self.costdf.drop(columns=['saved cost'])
         self.costdf.loc[:, 'cost'] = 0.0
         
 
@@ -474,12 +412,6 @@ class CostCalculator:
             # cleanly through read_from_xlsx.
             orderedcost = pd.DataFrame(columns=self.cost_columns)
         else:
-            # Promote 'saved cost' → 'cost' before serialising so the file stores
-            # the user-set price, not the computed one.
-            # Guard: 'saved cost' may be absent if rows were added programmatically
-            # without going through read_from_xlsx (e.g. on a fresh blank database).
-            if 'saved cost' in orderedcost.columns:
-                orderedcost.loc[:, 'cost'] = orderedcost.loc[:, 'saved cost']
             # reindex instead of __getitem__ so missing columns become NaN
             # rather than raising KeyError.
             orderedcost = orderedcost.reindex(columns=self.cost_columns)

@@ -19,7 +19,7 @@ class MenuViewer:
         self.cc = cc if cc is not None else CostCalculator()
         self.allvals = set()
         self.excel_filename = 'amc_menu_database.xlsx'
-        self.hide_columns = ['cost', 'note', 'conversion', 'saved cost', 'equ quant']
+        self.hide_columns = ['cost', 'note', 'conversion', 'equ quant']
         
         # Track selected allergens
         self.selected_allergens = []

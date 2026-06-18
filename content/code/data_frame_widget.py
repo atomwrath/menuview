@@ -464,40 +464,6 @@ class DataFrameWidget:
                             widget.style.text_color = 'red'
                             #widget.add_class('invalid-input')  # CSS class for invalid input
 
-                            
-
-            elif column == 'saved cost':
-                # check if valid cost
-                try:
-                    newval = float(newval)
-                    # check valid value
-            
-                except:
-                    # clear saved cost?
-                    newval = -1
-
-                if self.df_type == 'recipe':
-                    recipename = self.df.iloc[0]['ingredient']
-                    # update saved cost
-                    row = self.df.iloc[index]
-                    if (newval < 0):
-                        set_df_val(self.cc.costdf, row, 'saved cost', np.nan)
-                        if (self.cc.use_saved):
-                            self.cc.set_item_ingredient(recipename, row['ingredient'], 'cost', 0)
-                            self.cc.costdf.loc[self.cc.costdf['ingredient'] == row['ingredient'],'cost'] = 0
-                    else:
-                        set_df_val(self.cc.costdf, row, 'saved cost', newval)
-                    #set_df_val(cc.costdf, row, 'cost', newval)
-                    
-                    # zero out all affected cost
-                    # parent recipe, 
-                    self.cc.clear_cost(recipename)
-
-                    self.cc.recipe_cost(recipename)
-                    self.setdf(recipename)
-                    print('saved cost')
-                    self.update_display()
-                    
             elif column == 'menu price':
                 # check if valid cost
                 try:

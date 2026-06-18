@@ -22,7 +22,7 @@ class MenuDisplayWidget:
         self.width = '100px'
         self.column_width = {}
         self.df_type = None
-        self.hide_columns = ['cost', 'note', 'conversion', 'saved cost', 'equ quant']
+        self.hide_columns = ['cost', 'note', 'conversion', 'equ quant']
         self.backbutton = create_styled_button('Back', disabled=True)
         self.search_history = []
         self.last_lookup = ''
