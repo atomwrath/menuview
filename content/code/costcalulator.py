@@ -885,3 +885,8 @@ class CostCalculator:
                                     allaller.add(asub)
             self.costdf.loc[self.costdf['ingredient'] == item, 'allergen'] = ", ".join(allaller)
         return allaller
+    
+from fast_cost import FastCostMixin
+
+class CostCalculator(FastCostMixin, CostCalculator):   # rebinds the name
+    pass
