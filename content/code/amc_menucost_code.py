@@ -4,7 +4,7 @@ import numpy as np
 from IPython.display import display
 from costcalulator import CostCalculator
 from data_frame_explorer import DataFrameExplorer
-
+    
 def main():
     cc = CostCalculator()
     try:

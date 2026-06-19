@@ -34,6 +34,9 @@ class DataFrameWidget:
         self._pending_lookup_quantity = None    # set by on_lookup_click before trigger fires
         self._navigating_back = False           # True while on_back_click is executing;
                                                 # tells update_search not to clear scale
+        self._pending_insert = None        # (anchor_ingredient, 'before'|'after') awaiting a mid-list slot
+        self._pending_insert_name = None   # ingredient name to pre-fill that slot with, or None for a blank slot            # row index -> delete Button widget, for direct enable/disable
+        self._last_deleted = None   # snapshot of the most recently deleted ingredient row, for reorder-restore
         self.search_history = []
         self.scale_stack = []    # parallel to search_history; entry[i] = scale active at level i
         self.search_history = []  # Add this line for tracking history
@@ -196,6 +199,37 @@ class DataFrameWidget:
  
         return mydf
         
+    def _next_committed_anchor(self, recipename, start_index):
+        ''' Scan self.df forward from start_index for the next already-
+            committed ingredient — used to position a newly-inserted row
+            relative to whatever currently follows it on screen.
+        '''
+        for j in range(start_index, len(self.df)):
+            name = self.df.iloc[j]['ingredient']
+            if name and not self.cc.get_item_ingredient(recipename, name).empty:
+                return name
+        return None
+
+    def _commit_restored_ingredient(self, recipename, ingredient_name, anchor):
+        ''' Insert ingredient_name before `anchor` (or at the end if None),
+            restoring quantity / menu price / note from the last-deleted
+            snapshot rather than starting blank. Used for reordering: delete
+            an ingredient, then re-add it elsewhere in the same recipe.
+        '''
+        snap = self._last_deleted
+        self.cc.insert_ingredient(recipename, ingredient_name, snap.get('quantity', ''), before=anchor)
+        if 'menu price' in self.cc.costdf.columns and snap.get('menu price', '') not in ('', None):
+            self.cc.set_item_ingredient(recipename, ingredient_name, 'menu price', snap.get('menu price'))
+        if 'note' in self.cc.costdf.columns and snap.get('note', '') not in ('', None):
+            self.cc.set_item_ingredient(recipename, ingredient_name, 'note', snap.get('note'))
+        self._last_deleted = None
+        self._pending_insert = None
+        self._pending_insert_name = None
+        self.cc.clear_cost(recipename)
+        self.cc.recipe_cost(recipename)
+        self.setdf(recipename)
+        self.update_display()
+        
     def update_display(self):
         self.progress_bar.layout.visibility = 'visible'
         self.progress_bar.value = 0
@@ -242,9 +276,12 @@ class DataFrameWidget:
     
     # Modify _create_grid method to update the progress bar
     def _create_grid(self):
-        # Show progress bar
+         # Show progress bar
         self.progress_bar.layout.visibility = 'visible'
         self.progress_bar.value = 0
+
+        self._pending_delete = {}
+        self.delete_buttons = {}
         
         # Create a list to store the widgets
         items = []
@@ -270,6 +307,25 @@ class DataFrameWidget:
             # set blank row up as a member of the recipe
             new_row['item'] = self.df.iloc[0]['ingredient']
             self.df = pd.concat([self.df, new_row], ignore_index=True)
+
+            # If an "insert" was requested, splice a second blank row in
+            # immediately above its anchor — purely in self.df; costdf is
+            # untouched until a name + quantity are actually typed into it.
+            if self._pending_insert is not None:
+                anchor_name, direction = self._pending_insert
+                anchor_idx = self.df.index[self.df['ingredient'] == anchor_name]
+                if len(anchor_idx) > 0:
+                    pos = self.df.index.get_loc(anchor_idx[0])
+                    if direction == 'after':
+                        pos += 1
+                    blank = pd.DataFrame({column: [''] for column in self.df.columns})
+                    blank['item'] = self.df.iloc[0]['ingredient']
+                    if self._pending_insert_name:
+                        blank['ingredient'] = self._pending_insert_name
+                    self.df = pd.concat([self.df.iloc[:pos], blank, self.df.iloc[pos:]], ignore_index=True)
+                else:
+                    self._pending_insert = None
+                    self._pending_insert_name = None
             
         # Update progress
         self.progress_bar.value = 10
@@ -389,7 +445,7 @@ class DataFrameWidget:
             defmatch = ['nickname', 'description', 'size', 'price', 'date', 'supplier']
             newval = change['new']
             oldval = self.df.iloc[index][column]
-                
+            
             if column == 'quantity':
                 if self.df_type == 'recipe':
                     # ── View / Flatten: header-row quantity → scale, don't edit DB ──
@@ -400,68 +456,243 @@ class DataFrameWidget:
                     recipename = self.df.iloc[0]['ingredient']
                     # only update as recipe if in recipe mode
                     # check that we are editting a quantity for a valid ingredient
-                    if self.df.iloc[index]['ingredient'] in self.all_ingredients:
+                    ingredient_name = self.df.iloc[index]['ingredient']
+                    if ingredient_name in self.all_ingredients:
                         #newsize = parse_quant(newval)
                         #oldsize = parse_quant(oldval)
                         # print(f"{oldval=}, {newval=}")
                         row = self.df.iloc[index]
                         # set_df_val(cc.costdf, row, column, newval)
                         self.df.loc[index:index, column] = newval
-                        if (newval != oldval):
-    
-                            #button[0].disabled = False
+
+                        # A pending ingredient — typed but no quantity committed
+                        # yet — has no matching row in costdf. This is its first
+                        # commit, triggered by entering a quantity for it.
+                        if self.cc.get_item_ingredient(recipename, ingredient_name).empty:
+                            if str(newval).strip() == '':
+                                return
+
+                            # find the next already-committed ingredient in display
+                            # order, so the row lands in the right costdf position
+                            anchor = None
+                            for j in range(index + 1, len(self.df)):
+                                next_name = self.df.iloc[j]['ingredient']
+                                if next_name and not self.cc.get_item_ingredient(recipename, next_name).empty:
+                                    anchor = next_name
+                                    break
+
+                            anchor = self._next_committed_anchor(recipename, index + 1)
+                            self.cc.insert_ingredient(recipename, ingredient_name, newval, before=anchor)
+
+                            # this row is now committed — the pending mid-list
+                            # insert slot it represented is resolved
+                            self._pending_insert = None
+                            self._pending_insert_name = None
+
+                            self.cc.clear_cost(recipename)
+                            self.cc.recipe_cost(recipename)
+                            self.setdf(recipename)
+                            self.update_display()
+
+                        elif (newval != oldval):
                             updatecost = True
                             set_df_val(self.cc.costdf, row, column, newval)
                             set_df_val(self.cc.costdf, row, 'cost', 0)
-    
                             self.cc.clear_cost(recipename)
                             self.cc.recipe_cost(recipename)
                             self.setdf(recipename)
                             self.update_display()
-                        
+                            
+            # elif column == 'ingredient':
+            #     if self.df_type == 'recipe':
+            #         recipename = self.df.iloc[0]['ingredient']
+            #         is_committed = not self.cc.get_item_ingredient(recipename, oldval).empty
+
+            #         # ── Comma-triggered insert ──────────────────────────────
+            #         # Typing ",X" / "X," (optionally with a name in the other
+            #         # slot) into an EXISTING ingredient's cell requests a new
+            #         # row before/after it, instead of renaming it. Exactly one
+            #         # side of the comma must match the cell's current value.
+            #         if is_committed and ',' in newval:
+            #             before_text, _, after_text = newval.partition(',')
+            #             before_text = before_text.strip()
+            #             after_text = after_text.strip()
+
+            #             direction = None
+            #             insert_name = None
+            #             if before_text == '' and after_text == oldval:
+            #                 direction = 'before'
+            #             elif after_text == '' and before_text == oldval:
+            #                 direction = 'after'
+            #             elif after_text == oldval and before_text != '':
+            #                 direction = 'before'
+            #                 insert_name = before_text
+            #             elif before_text == oldval and after_text != '':
+            #                 direction = 'after'
+            #                 insert_name = after_text
+
+            #             if direction is not None:
+            #                 if insert_name is not None and insert_name not in self.all_ingredients:
+            #                     widget.style.text_color = 'red'
+            #                     return
+            #                 # leave the existing ingredient itself unchanged
+            #                 self.df.loc[index:index, 'ingredient'] = oldval
+            #                 self._pending_insert = (oldval, direction)
+            #                 self._pending_insert_name = insert_name
+            #                 self.update_display()
+            #                 return
+            #             # comma present but doesn't match the pattern — fall
+            #             # through to normal validation (will show red)
+
+            #         # check if valid ingredient
+            #         if newval in self.all_ingredients:
+            #             widget.style.text_color = self.defcolor
+            #             self.df.loc[index:index, 'item'] = recipename
+
+            #             if newval != oldval and newval in self.cc.item_list(recipename)['ingredient'].unique():
+            #                 print('already in recipe')
+            #                 widget.style.text_color = 'red'
+            #                 return
+
+            #             if is_committed:
+            #                 if newval != oldval:
+            #                     try:
+            #                         self.cc.replace_ingredient(recipename, oldval, newval)
+            #                     except ValueError as e:
+            #                         print(e)
+            #                         widget.style.text_color = 'red'
+            #                         return
+            #                     self.cc.clear_cost(recipename)
+            #                     self.cc.recipe_cost(recipename)
+            #                     self.setdf(recipename)
+            #                     self.update_display()
+            #             else:
+            #                 self.df.loc[index:index, 'ingredient'] = newval
+
+            #         else: # newval not a recognized ingredient
+            #             if str(newval) == '':
+            #                 if is_committed:
+            #                     # back to immediate delete — no confirmation step
+            #                     self.cc.removeIngredient(recipename, oldval)
+            #                     self.cc.clear_cost(recipename)
+            #                     self.cc.recipe_cost(recipename)
+            #                     self.setdf(recipename)
+            #                     self.update_display()
+            #                 else:
+            #                     self.df.loc[index:index, 'ingredient'] = ''
+            #             else:
+            #                 widget.style.text_color = 'red'
             elif column == 'ingredient':
                 if self.df_type == 'recipe':
                     recipename = self.df.iloc[0]['ingredient']
+                    is_committed = not self.cc.get_item_ingredient(recipename, oldval).empty
+
+                    # ── Comma-triggered insert ──────────────────────────────
+                    if is_committed and ',' in newval:
+                        before_text, _, after_text = newval.partition(',')
+                        before_text = before_text.strip()
+                        after_text = after_text.strip()
+
+                        direction = None
+                        insert_name = None
+                        if before_text == '' and after_text == oldval:
+                            direction = 'before'
+                        elif after_text == '' and before_text == oldval:
+                            direction = 'after'
+                        elif after_text == oldval and before_text != '':
+                            direction = 'before'
+                            insert_name = before_text
+                        elif before_text == oldval and after_text != '':
+                            direction = 'after'
+                            insert_name = after_text
+
+                        if direction is not None:
+                            if insert_name is not None and insert_name not in self.all_ingredients:
+                                widget.style.text_color = 'red'
+                                return
+
+                            self.df.loc[index:index, 'ingredient'] = oldval  # anchor cell unchanged
+
+                            # Reordering shortcut: re-adding the ingredient we
+                            # just deleted — restore it instead of starting blank.
+                            if (insert_name is not None and self._last_deleted is not None
+                                    and self._last_deleted.get('recipe') == recipename
+                                    and insert_name == self._last_deleted['ingredient']):
+                                if direction == 'before':
+                                    anchor = oldval
+                                else:
+                                    ordered = list(self.cc.item_list(recipename)['ingredient'])
+                                    anchor = None
+                                    if oldval in ordered:
+                                        pos = ordered.index(oldval)
+                                        if pos + 1 < len(ordered):
+                                            anchor = ordered[pos + 1]
+                                self._commit_restored_ingredient(recipename, insert_name, anchor)
+                                return
+
+                            self._pending_insert = (oldval, direction)
+                            self._pending_insert_name = insert_name
+                            self.update_display()
+                            return
+                        # comma present but pattern didn't match — falls through, will show red
+
                     # check if valid ingredient
                     if newval in self.all_ingredients:
                         widget.style.text_color = self.defcolor
-                        # check if ingredient is alread in recipe
                         self.df.loc[index:index, 'item'] = recipename
-                        if newval in self.cc.item_list(recipename)['ingredient'].unique():
-                            # ignore (repeated ingredients not allowed)
+
+                        if newval != oldval and newval in self.cc.item_list(recipename)['ingredient'].unique():
                             print('already in recipe')
+                            widget.style.text_color = 'red'
+                            return
+
+                        if is_committed:
+                            if newval != oldval:
+                                try:
+                                    self.cc.replace_ingredient(recipename, oldval, newval)
+                                except ValueError as e:
+                                    print(e)
+                                    widget.style.text_color = 'red'
+                                    return
+                                self.cc.clear_cost(recipename)
+                                self.cc.recipe_cost(recipename)
+                                self.setdf(recipename)
+                                self.update_display()
                         else:
-                            # check if there was a valid old value
-                            if oldval in self.all_ingredients:
-                                self.cc.removeIngredient(recipename, oldval)
-
-                            # add new row to costdf
-                            # set quantity to zero if none
                             self.df.loc[index:index, 'ingredient'] = newval
-                            quant = parse_quant(self.df.loc[index]['quantity'])
-                            if not quant:
-                                self.df.loc[index:index, 'quantity'] = '0'
-                            self.df.loc[index:index, 'cost'] = 0
-                            newdf = pd.DataFrame([self.df.iloc[index]])
-                            self.cc.costdf = pd.concat([self.cc.costdf, newdf], ignore_index=True)
 
-                            self.cc.clear_cost(recipename)
-                            self.cc.recipe_cost(recipename)
-                            self.setdf(recipename)
-                            # self.df = self.cc.findframe(reciperow['ingredient']).reset_index(drop=True)
-                            self.update_display()
+                            # Reordering shortcut for a blank slot (bottom row
+                            # or a comma-spliced blank): typed name matches
+                            # the ingredient we just deleted — restore it now.
+                            if (self._last_deleted is not None
+                                    and self._last_deleted.get('recipe') == recipename
+                                    and newval == self._last_deleted['ingredient']):
+                                anchor = self._next_committed_anchor(recipename, index + 1)
+                                self._commit_restored_ingredient(recipename, newval, anchor)
+                                return
 
-                    else: # newval not an ingredient
+                    else: # newval not a recognized ingredient
                         if str(newval) == '':
-                            self.cc.removeIngredient(recipename, oldval)
-                            self.cc.clear_cost(recipename)
-                            self.cc.recipe_cost(recipename)
-                            self.setdf(recipename)
-                            # self.df = self.cc.findframe(reciperow['ingredient']).reset_index(drop=True)
-                            self.update_display()
+                            if is_committed:
+                                deleted_row = self.cc.get_item_ingredient(recipename, oldval)
+                                if not deleted_row.empty:
+                                    r = deleted_row.iloc[0]
+                                    self._last_deleted = {
+                                        'recipe': recipename,
+                                        'ingredient': oldval,
+                                        'quantity': r.get('quantity', ''),
+                                        'menu price': r.get('menu price', ''),
+                                        'note': r.get('note', ''),
+                                    }
+                                self.cc.removeIngredient(recipename, oldval)
+                                self.cc.clear_cost(recipename)
+                                self.cc.recipe_cost(recipename)
+                                self.setdf(recipename)
+                                self.update_display()
+                            else:
+                                self.df.loc[index:index, 'ingredient'] = ''
                         else:
                             widget.style.text_color = 'red'
-                            #widget.add_class('invalid-input')  # CSS class for invalid input
 
             elif column == 'menu price':
                 # check if valid cost
@@ -584,23 +815,6 @@ class DataFrameWidget:
                     self.update_display()
                     # update mention display?
                     
-            # elif column == 'conversion':
-            #     if (self.df_type == 'guide') or (self.df_type == 'recipe'):
-            #         row = self.df.iloc[index]
-            #         newval = newval.strip()
-            #         # check valid conversion
-            #         convrs = parse_conversion(newval)
-            #         if len(convrs) > 0 or newval == '':
-            #             # set convrs
-            #             if self.df_type == 'recipe':
-            #                 _update_df(self.cc.costdf, row, ['ingredient', 'item', 'quantity'], 'conversion', newval)
-            #                 _clear_costs(row['ingredient'])
-            #                 self.setdf(row['ingredient'])
-            #             else:
-            #                 _update_df(self.cc.uni_g, row, ['nickname', 'description', 'size', 'supplier'], 'conversion', newval)
-            #                 _clear_costs(row['nickname'])
-            #                 self.setdf(row['nickname'])
-            #             self.update_display()
             elif column == 'conversion':
                 if (self.df_type == 'guide') or (self.df_type == 'recipe'):
                     row = self.df.iloc[index]
@@ -690,25 +904,18 @@ class DataFrameWidget:
                     cell_widget = widgets.Label(value=str(myval), layout=self.getlayout(col))
                 else:
                     if (col == 'ingredient') and (self.df_type == 'recipe'):
-                        cell_widget = None
-                        if (myval == ''): # use combobox for blank item
-                            cell_widget = widgets.Combobox(
-                                value = str(myval),
-                                options=tuple(self.all_ingredients),
-                                ensure_option=False,
-                                disabled=is_disabled,
-                                continuous_update=False,
-                                layout = self.getlayout(col)
-                            )
-                        else:
-                            cell_widget = widgets.Text(
-                                value = str(myval),
-                                #options=tuple(self.all_ingredients),
-                                ensure_option=False,
-                                disabled=is_disabled,
-                                continuous_update=False,
-                                layout = self.getlayout(col)
-                            )
+                        # Combobox for every editable ingredient cell — blank
+                        # (new) or already-filled (existing) — so editing an
+                        # existing ingredient gets the same autocomplete /
+                        # validity hints as adding a new one.
+                        cell_widget = widgets.Combobox(
+                            value=str(myval),
+                            options=tuple(self.all_ingredients),
+                            ensure_option=False,
+                            disabled=is_disabled,
+                            continuous_update=False,
+                            layout=self.getlayout(col)
+                        )
                         cell_widget.observe(lambda change, col=col, cell_widget=cell_widget: on_text_change(change, col, cell_widget), 'value')
                     else:
                         cell_widget = widgets.Text(

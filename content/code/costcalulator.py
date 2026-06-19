@@ -688,6 +688,185 @@ class CostCalculator:
             self.get_all_children(child, all_children)
         return all_children
     
+    def replace_ingredient(self, item, old_ingredient, new_ingredient):
+        ''' Swap one ingredient for another within a recipe (item), preserving
+            that row's position and quantity. Used when editing an existing
+            ingredient name in place, instead of removing + re-adding a row.
+
+            Returns True if a row was replaced, False if no matching row was found.
+            Raises ValueError if new_ingredient is already used elsewhere in item.
+        '''
+        old_ingredient = str(old_ingredient).strip()
+        new_ingredient = str(new_ingredient).strip()
+
+        mask = (self.costdf['item'] == item) & (self.costdf['ingredient'] == old_ingredient)
+        if not mask.any():
+            return False
+
+        if new_ingredient == old_ingredient:
+            return True
+
+        if new_ingredient in self.item_list(item)['ingredient'].unique():
+            raise ValueError(f'"{new_ingredient}" is already in this recipe')
+
+        if isinstance(self.costdf['ingredient'].dtype, pd.CategoricalDtype):
+            if new_ingredient not in self.costdf['ingredient'].cat.categories:
+                self.costdf['ingredient'] = self.costdf['ingredient'].cat.add_categories([new_ingredient])
+
+        self.costdf.loc[mask, 'ingredient'] = new_ingredient
+        self.costdf.loc[mask, 'cost'] = 0.0
+        # a unit-conversion override on the old row was tuned for the old
+        # ingredient's units — don't silently carry it over to a different one
+        if 'conversion' in self.costdf.columns:
+            self.costdf.loc[mask, 'conversion'] = ''
+
+        if isinstance(self.costdf['ingredient'].dtype, pd.CategoricalDtype):
+            self.costdf['ingredient'] = self.costdf['ingredient'].cat.remove_unused_categories()
+
+        self.clear_cost(item)
+        return True
+    
+    def insert_ingredient(self, item, ingredient, quantity, before=None):
+        ''' Add a new ingredient row to a recipe (item).
+            If `before` is an ingredient already in item, the new row is spliced
+            in immediately above that ingredient's row, preserving recipe order.
+            Otherwise (before is None, or not found in item) the row is appended
+            at the end — the original behavior for the trailing "add ingredient" slot.
+        '''
+        ingredient = str(ingredient).strip()
+        quantity = str(quantity).strip()
+
+        new_row = pd.DataFrame({col: [''] for col in self.costdf.columns})
+        new_row['item'] = item
+        new_row['ingredient'] = ingredient
+        new_row['quantity'] = quantity
+        new_row['cost'] = 0.0
+
+        insert_pos = len(self.costdf)
+        if before is not None:
+            before = str(before).strip()
+            matches = self.costdf.index[(self.costdf['item'] == item) & (self.costdf['ingredient'] == before)]
+            if len(matches) > 0:
+                insert_pos = self.costdf.index.get_loc(matches[0])  # handles index gaps from prior removals
+
+        self.costdf = pd.concat([
+            self.costdf.iloc[:insert_pos],
+            new_row,
+            self.costdf.iloc[insert_pos:]
+        ], ignore_index=True)
+
+        self.clear_cost(item)
+    
+    def count_rename_impact(self, name):
+        ''' How many OTHER recipes/categories reference `name` as an ingredient.
+            Used to preview the blast radius of a rename before committing it.
+        '''
+        return len(set(self.get_parents(str(name).strip())) - {'recipe'})
+
+    def rename_nick(self, old_name, new_name):
+        ''' Rename a recipe, simple ingredient, or category everywhere it is
+            used: its own definition (recipe header / own ingredient rows /
+            guide nickname) and every place it is referenced as an ingredient
+            inside other recipes.
+
+            Returns the number of other recipes/categories that were updated.
+            Raises ValueError if new_name is blank, unchanged, or already used.
+        '''
+        old_name = str(old_name).strip()
+        new_name = str(new_name).strip()
+
+        if not new_name:
+            raise ValueError('New name cannot be blank')
+        if new_name == old_name:
+            raise ValueError('New name is the same as the current name')
+
+        def _exists(name):
+            return (not self.get_recipe_entry(name).empty
+                    or not self.costdf.loc[self.costdf['item'] == name].empty
+                    or not self.costdf.loc[self.costdf['ingredient'] == name].empty
+                    or not self.find_nick(name).empty)
+
+        if not _exists(old_name):
+            raise ValueError(f'"{old_name}" was not found')
+        if _exists(new_name):
+            raise ValueError(f'"{new_name}" already exists')
+
+        # count BEFORE mutating anything
+        affected = set(self.get_parents(old_name)) - {'recipe'}
+
+        # costdf['item'] / ['ingredient'] are pd.Categorical — register the new
+        # label as a category before assigning it, or pandas raises / NaNs it.
+        for col in ('item', 'ingredient'):
+            if isinstance(self.costdf[col].dtype, pd.CategoricalDtype):
+                if new_name not in self.costdf[col].cat.categories:
+                    self.costdf[col] = self.costdf[col].cat.add_categories([new_name])
+
+        # rows that define what's *inside* old_name (its own ingredient list)
+        self.costdf.loc[self.costdf['item'] == old_name, 'item'] = new_name
+        # every place old_name appears as an ingredient: its own recipe header
+        # row AND every other recipe/category that references it
+        self.costdf.loc[self.costdf['ingredient'] == old_name, 'ingredient'] = new_name
+        # the price-guide nickname, if old_name is a simple ingredient
+        self.uni_g.loc[self.uni_g['nickname'] == old_name, 'nickname'] = new_name
+
+        for col in ('item', 'ingredient'):
+            if isinstance(self.costdf[col].dtype, pd.CategoricalDtype):
+                self.costdf[col] = self.costdf[col].cat.remove_unused_categories()
+
+        self.clear_cost(new_name)   # rebuilds maps, drops memo/leaf cache, zeroes affected costs
+        return len(affected)
+    
+    def duplicate_recipe(self, old_name, new_name):
+        ''' Create a copy of a recipe under a new name. The original recipe and
+            every place that references it are left completely untouched — this
+            only adds a new, independent recipe with the same ingredients and
+            quantities. Not available for simple ingredients (no recipe entry).
+
+            Raises ValueError if old_name isn't a recipe, or new_name is blank/
+            unchanged/already in use.
+        '''
+        old_name = str(old_name).strip()
+        new_name = str(new_name).strip()
+
+        recipe_entry = self.get_recipe_entry(old_name)
+        if recipe_entry.empty:
+            raise ValueError(f'"{old_name}" is not a recipe — only recipes can be duplicated')
+
+        if not new_name:
+            raise ValueError('New name cannot be blank')
+        if new_name == old_name:
+            raise ValueError('New name is the same as the current name')
+
+        def _exists(name):
+            return (not self.get_recipe_entry(name).empty
+                    or not self.costdf.loc[self.costdf['item'] == name].empty
+                    or not self.costdf.loc[self.costdf['ingredient'] == name].empty
+                    or not self.find_nick(name).empty)
+
+        if _exists(new_name):
+            raise ValueError(f'"{new_name}" already exists')
+
+        # register new_name as a category before any row using it gets created
+        for col in ('item', 'ingredient'):
+            if isinstance(self.costdf[col].dtype, pd.CategoricalDtype):
+                if new_name not in self.costdf[col].cat.categories:
+                    self.costdf[col] = self.costdf[col].cat.add_categories([new_name])
+
+        new_header = recipe_entry.copy()
+        new_header['ingredient'] = new_name
+        if 'cost' in new_header.columns:
+            new_header['cost'] = 0.0
+
+        children = self.costdf.loc[self.costdf['item'] == old_name].copy()
+        children['item'] = new_name
+        if 'cost' in children.columns:
+            children['cost'] = 0.0
+
+        self.costdf = pd.concat([self.costdf, new_header, children], ignore_index=True)
+
+        self.clear_cost(new_name)
+        return True
+    
     def get_parents(self, iname):
         ''' get immediate parents of iname
         '''

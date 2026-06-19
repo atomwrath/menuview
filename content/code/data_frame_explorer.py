@@ -177,6 +177,26 @@ class DataFrameExplorer:
         # copy current display to clipboard
         copybutton = widgets.Button(description=f'copy sheet')
         copybutton.on_click(lambda x: self.df_widget.df.to_clipboard())
+        
+        # rename or duplicate the currently loaded recipe / ingredient (edit mode only)
+        self.renamebutton = widgets.Button(description='rename / duplicate', disabled=True)
+        self.renamebutton.on_click(self.on_rename_click)
+
+        self.rename_new_name = widgets.Text(value='', description='New name:', style=self.fontstyle)
+        self.rename_info_label = widgets.Label(value='')
+        self.rename_confirm_button = widgets.Button(description='Confirm rename', button_style='warning')
+        self.rename_confirm_button.on_click(self.on_rename_confirm)
+        self.duplicate_button = widgets.Button(description='Duplicate as new recipe', button_style='info')
+        self.duplicate_button.on_click(self.on_duplicate_confirm)
+        self.rename_cancel_button = widgets.Button(description='Cancel')
+        self.rename_cancel_button.on_click(self.on_rename_cancel)
+        self.rename_dialog = widgets.VBox(
+            [self.rename_info_label,
+             widgets.HBox([self.rename_new_name, self.rename_confirm_button,
+                           self.duplicate_button, self.rename_cancel_button])],
+            layout={'display': 'none', 'border': '2px solid orange', 'padding': '5px', 'margin': '5px 0'}
+        )
+        self._rename_target = None   # nick the dialog is currently acting on
 
         # Three-way mode selector: Edit / View / Flatten
         self._mode_changing = False   # guard against observer re-entry
@@ -258,10 +278,11 @@ class DataFrameExplorer:
             layout=widgets.Layout(width='auto', margin='5px 0')
         )
         
-        # Modify top display to include menu buttons and back button
+        # Modify top display to include menu buttons and back button, copy, rename
         topdisplay = widgets.VBox([
             self.menubutton_hbox,
-            widgets.HBox([self.backbutton, self.searchinput, copybutton]), 
+            widgets.HBox([self.backbutton, self.searchinput, copybutton, self.renamebutton]),
+            self.rename_dialog,
             self.dfdisplay
         ], layout={'border': '2px solid green'})
         
@@ -351,10 +372,13 @@ class DataFrameExplorer:
             self.enabled_columns = self.all_enabled_columns.copy()
             for w in self.editor_widgets.values():
                 w.layout.display = 'flex'
+            
             self.df_widget.enabled_columns = self.enabled_columns
+            self.renamebutton.layout.display = 'flex'
             if self.df_widget.last_lookup:
                 self.df_widget.lookup_name(self.df_widget.last_lookup)
                 self.df_widget.update_display()
+            self._refresh_rename_button()
 
         elif new_mode == 'View':
             self._activate_view_mode()
@@ -394,6 +418,9 @@ class DataFrameExplorer:
             w.layout.display = 'none'
         self.df_widget.enabled_columns = self.enabled_columns
         self.df_widget.scale_qty_editable = True 
+        # rename is an edit-mode-only action
+        self.renamebutton.layout.display = 'none'
+        self.rename_dialog.layout.display = 'none'
         # Deliberately no reload — the caller owns navigation.
         
     def _on_view_scale_quantity(self, new_qty_str, widget):
@@ -797,21 +824,21 @@ class DataFrameExplorer:
                 self.df_widget.scale_factor = None
  
             self._scale_pending = None
- 
+            
             self.df_widget.lookup_name(iname)
             self.df_widget.update_display()
             self.update_mentions(iname)
- 
+            self._refresh_rename_button()
+
         else:
             change['owner'].style.text_color = 'red'
             self._scale_pending = None
             self.df_widget._navigating_back = False
+            self._refresh_rename_button()
 
     def cost_selector(self, change):
         method = change['new']
-        self.cc.cost_picker = self.cost_select_method[method]
-        # clear all costs
-        self.cc.costdf['cost'] = 0
+        self.cc.change_cost_method(self.cost_select_method[method])  # picker + memo flush + zero
         self.df_widget.lookup_name(self.df_widget.last_lookup)
         self.df_widget.update_display()
 
@@ -1071,6 +1098,81 @@ class DataFrameExplorer:
         
         # Inform the user
         print(f'Created new ingredient: {ing_name}')
+        
+    def _refresh_rename_button(self):
+        ''' Enable rename only in Edit mode with a valid recipe/ingredient loaded '''
+        nick = self.searchinput.value
+        self.renamebutton.disabled = not (self.edit_mode and nick in self.allvals)
+
+    def on_rename_click(self, b=None):
+        ''' Open the rename/duplicate dialog for the currently loaded nick '''
+        nick = self.df_widget.last_lookup
+        if not nick or nick not in self.allvals:
+            return
+        self._rename_target = nick
+
+        is_recipe = not self.cc.get_recipe_entry(nick).empty
+        affected = self.cc.count_rename_impact(nick)
+        if affected == 0:
+            msg = f'Renaming "{nick}" will not affect any other recipe.'
+        elif affected == 1:
+            msg = f'Renaming "{nick}" will update 1 other recipe that uses it.'
+        else:
+            msg = f'Renaming "{nick}" will update {affected} other recipes that use it.'
+        if is_recipe:
+            msg += ' Duplicating creates an independent copy and leaves everything else unchanged.'
+
+        self.rename_info_label.value = msg
+        self.rename_new_name.value = nick
+        self.rename_new_name.style.text_color = self.defcolor
+        self.duplicate_button.layout.display = 'flex' if is_recipe else 'none'
+        self.rename_dialog.layout.display = 'flex'
+
+    def on_rename_cancel(self, b=None):
+        self.rename_dialog.layout.display = 'none'
+
+    def on_rename_confirm(self, b=None):
+        old_name = self._rename_target
+        new_name = self.rename_new_name.value.strip()
+        try:
+            self.cc.rename_nick(old_name, new_name)
+        except ValueError as e:
+            self.rename_new_name.style.text_color = 'red'
+            self.rename_info_label.value = str(e)
+            return
+        self._after_rename_or_duplicate(old_name, new_name, renamed=True)
+
+    def on_duplicate_confirm(self, b=None):
+        old_name = self._rename_target
+        new_name = self.rename_new_name.value.strip()
+        try:
+            self.cc.duplicate_recipe(old_name, new_name)
+        except ValueError as e:
+            self.rename_new_name.style.text_color = 'red'
+            self.rename_info_label.value = str(e)
+            return
+        self._after_rename_or_duplicate(old_name, new_name, renamed=False)
+
+    def _after_rename_or_duplicate(self, old_name, new_name, renamed):
+        ''' Common cleanup after either action succeeds: refresh search
+            caches, close the dialog, and navigate to the result.
+        '''
+        nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+        ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
+        self.allvals = nicks.union(ingrs)
+        self.searchinput.options = tuple(self.allvals)
+        self.df_widget.all_ingredients = self.allvals
+
+        self.rename_dialog.layout.display = 'none'
+
+        if renamed:
+            # old_name no longer exists anywhere — fix up history
+            self.df_widget.search_history = [
+                new_name if h == old_name else h for h in self.df_widget.search_history
+            ]
+        # for a duplicate, old_name is still valid and untouched — just
+        # navigate to the freshly created copy
+        self.searchinput.value = new_name
         
     def display(self):
         display(self.vbox)
