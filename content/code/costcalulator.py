@@ -867,6 +867,15 @@ class CostCalculator:
         self.clear_cost(new_name)
         return True
     
+    def mark_guide_dirty(self):
+        ''' Force find_nick's cached guide index to rebuild on next access.
+            Call after any in-place edit to uni_g that doesn't change row
+            count (price, size, date, ...) — the cache's cheap row-count
+            check can't detect those on its own.
+        '''
+        if hasattr(self, '_guide_dirty'):
+            self._guide_dirty = True
+    
     def get_parents(self, iname):
         ''' get immediate parents of iname
         '''

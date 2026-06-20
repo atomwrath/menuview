@@ -638,7 +638,7 @@ class DataFrameExplorer:
                 try:
                     pq = parse_quant(str(q))
                     if pq is not None and hasattr(pq, 'm') and pq.m > 0:
-                        return f"{(pq * scale):~.2f}"
+                        return f"{(pq * scale)}"
                 except Exception:
                     pass
                 return q
@@ -1088,6 +1088,7 @@ class DataFrameExplorer:
         
         # Add the new ingredient to the guide
         self.cc.uni_g = pd.concat([self.cc.uni_g, new_ingredient], ignore_index=True)
+        self.cc.mark_guide_dirty()
         
         # Update the available values for search
         nicks = set(self.cc.uni_g['nickname'].dropna().unique())

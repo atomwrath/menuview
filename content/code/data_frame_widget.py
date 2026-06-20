@@ -419,9 +419,6 @@ class DataFrameWidget:
         def on_text_change(change, column, widget):
             
             def _update_df(df, row, match_columns, update_column, new_value):
-                # Build a NaN-aware boolean mask so that rows where a match
-                # column contains NaN are handled correctly (NaN == NaN is
-                # always False in pandas, which silently breaks the lookup).
                 condition = pd.Series([True] * len(df), index=df.index)
                 for col in match_columns:
                     val = row[col]
@@ -434,6 +431,8 @@ class DataFrameWidget:
                     else:
                         condition = condition & (df[col] == val)
                 df.loc[condition, update_column] = new_value
+                if df is self.cc.uni_g:
+                    self.cc.mark_guide_dirty()
                 
             # clear cost of each recipe containing ingredient
             def _clear_costs(nickname):
@@ -446,6 +445,62 @@ class DataFrameWidget:
             newval = change['new']
             oldval = self.df.iloc[index][column]
             
+            # if column == 'quantity':
+            #     if self.df_type == 'recipe':
+            #         # ── View / Flatten: header-row quantity → scale, don't edit DB ──
+            #         if index == 0 and self.scale_qty_editable and self.scale_quantity_callback is not None:
+            #             self.scale_quantity_callback(newval, widget)
+            #             return
+            #         # ── Edit mode: normal DB update follows unchanged ─────────────
+            #         recipename = self.df.iloc[0]['ingredient']
+            #         # only update as recipe if in recipe mode
+            #         # check that we are editting a quantity for a valid ingredient
+            #         ingredient_name = self.df.iloc[index]['ingredient']
+            #         if ingredient_name in self.all_ingredients:
+            #             #newsize = parse_quant(newval)
+            #             #oldsize = parse_quant(oldval)
+            #             # print(f"{oldval=}, {newval=}")
+            #             row = self.df.iloc[index]
+            #             # set_df_val(cc.costdf, row, column, newval)
+            #             self.df.loc[index:index, column] = newval
+
+            #             # A pending ingredient — typed but no quantity committed
+            #             # yet — has no matching row in costdf. This is its first
+            #             # commit, triggered by entering a quantity for it.
+            #             if self.cc.get_item_ingredient(recipename, ingredient_name).empty:
+            #                 if str(newval).strip() == '':
+            #                     return
+
+            #                 # find the next already-committed ingredient in display
+            #                 # order, so the row lands in the right costdf position
+            #                 anchor = None
+            #                 for j in range(index + 1, len(self.df)):
+            #                     next_name = self.df.iloc[j]['ingredient']
+            #                     if next_name and not self.cc.get_item_ingredient(recipename, next_name).empty:
+            #                         anchor = next_name
+            #                         break
+
+            #                 anchor = self._next_committed_anchor(recipename, index + 1)
+            #                 self.cc.insert_ingredient(recipename, ingredient_name, newval, before=anchor)
+
+            #                 # this row is now committed — the pending mid-list
+            #                 # insert slot it represented is resolved
+            #                 self._pending_insert = None
+            #                 self._pending_insert_name = None
+
+            #                 self.cc.clear_cost(recipename)
+            #                 self.cc.recipe_cost(recipename)
+            #                 self.setdf(recipename)
+            #                 self.update_display()
+
+            #             elif (newval != oldval):
+            #                 updatecost = True
+            #                 set_df_val(self.cc.costdf, row, column, newval)
+            #                 set_df_val(self.cc.costdf, row, 'cost', 0)
+            #                 self.cc.clear_cost(recipename)
+            #                 self.cc.recipe_cost(recipename)
+            #                 self.setdf(recipename)
+            #                 self.update_display()
             if column == 'quantity':
                 if self.df_type == 'recipe':
                     # ── View / Flatten: header-row quantity → scale, don't edit DB ──
@@ -454,38 +509,20 @@ class DataFrameWidget:
                         return
                     # ── Edit mode: normal DB update follows unchanged ─────────────
                     recipename = self.df.iloc[0]['ingredient']
-                    # only update as recipe if in recipe mode
-                    # check that we are editting a quantity for a valid ingredient
                     ingredient_name = self.df.iloc[index]['ingredient']
                     if ingredient_name in self.all_ingredients:
-                        #newsize = parse_quant(newval)
-                        #oldsize = parse_quant(oldval)
-                        # print(f"{oldval=}, {newval=}")
                         row = self.df.iloc[index]
-                        # set_df_val(cc.costdf, row, column, newval)
                         self.df.loc[index:index, column] = newval
 
-                        # A pending ingredient — typed but no quantity committed
-                        # yet — has no matching row in costdf. This is its first
-                        # commit, triggered by entering a quantity for it.
-                        if self.cc.get_item_ingredient(recipename, ingredient_name).empty:
+                        # The recipe's own header row (item == 'recipe') always
+                        # already exists the moment the recipe is created — only
+                        # actual ingredient rows can be "not yet committed".
+                        if row['item'] != 'recipe' and self.cc.get_item_ingredient(recipename, ingredient_name).empty:
                             if str(newval).strip() == '':
                                 return
 
-                            # find the next already-committed ingredient in display
-                            # order, so the row lands in the right costdf position
-                            anchor = None
-                            for j in range(index + 1, len(self.df)):
-                                next_name = self.df.iloc[j]['ingredient']
-                                if next_name and not self.cc.get_item_ingredient(recipename, next_name).empty:
-                                    anchor = next_name
-                                    break
-
                             anchor = self._next_committed_anchor(recipename, index + 1)
                             self.cc.insert_ingredient(recipename, ingredient_name, newval, before=anchor)
-
-                            # this row is now committed — the pending mid-list
-                            # insert slot it represented is resolved
                             self._pending_insert = None
                             self._pending_insert_name = None
 
@@ -501,8 +538,7 @@ class DataFrameWidget:
                             self.cc.clear_cost(recipename)
                             self.cc.recipe_cost(recipename)
                             self.setdf(recipename)
-                            self.update_display()
-                            
+                            self.update_display()                
             # elif column == 'ingredient':
             #     if self.df_type == 'recipe':
             #         recipename = self.df.iloc[0]['ingredient']
