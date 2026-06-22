@@ -37,7 +37,8 @@ except Exception:  # pragma: no cover
 # Cache the pure string->Quantity parsers (hit thousands of times with the same
 # literals across a tree). Independent win, biggest in Pyodide where parsing is slow.
 _parse_quant = lru_cache(maxsize=None)(parse_quant)
-_parse_conv = lru_cache(maxsize=None)(parse_unit_conversion)
+#_parse_conv = lru_cache(maxsize=None)(parse_unit_conversion)
+_parse_conv = lru_cache(maxsize=None)(lambda conv_str: tuple(parse_unit_conversion(conv_str)))
 _parse_size = lru_cache(maxsize=None)(parse_size) if parse_size is not None else None
 
 

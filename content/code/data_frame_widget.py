@@ -434,12 +434,19 @@ class DataFrameWidget:
                 if df is self.cc.uni_g:
                     self.cc.mark_guide_dirty()
                 
-            # clear cost of each recipe containing ingredient
+            # clear cost of each recipe containing ingredient, then recompute it
             def _clear_costs(nickname):
                 mdf = self.cc.find_ingredient(nickname)
-                for i,m in mdf.iterrows():
+                # Exclude nickname's own recipe header row. It also has
+                # ingredient == nickname (that's just how headers are stored),
+                # but it isn't a use of nickname elsewhere — treating it as one
+                # zeroed the recipe's own cost via item == 'recipe' (not a real
+                # recipe name) and could never recompute it back.
+                mdf = mdf.loc[mdf['item'] != 'recipe']
+                for i, m in mdf.iterrows():
                     self.cc.set_item_ingredient(m['item'], nickname, 'cost', 0)
                     self.cc.clear_cost(m['item'])
+                    self.cc.recipe_cost(m['item'])
             
             defmatch = ['nickname', 'description', 'size', 'price', 'date', 'supplier']
             newval = change['new']
