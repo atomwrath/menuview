@@ -28,6 +28,7 @@ class DataFrameWidget:
         self.trigger = trigger
         self.last_lookup = ''
         self.last_lookup = ''
+        self._guide_row_index_map = {}   # display row position -> real uni_g index, for guide pages
         self.equ_quant_precision = None
         self.equ_quant_unit = None              # target unit for "equ quant" column
         self.scale_factor = None                # current display scale ratio (float|None)
@@ -45,6 +46,28 @@ class DataFrameWidget:
         self.cost_multipliers = [3.0]
         self.scale_qty_editable    = False   # True in View / Flatten modes
         self.scale_quantity_callback = None  # set by DataFrameExplorer
+        self.delete_confirm_callback = None  # set by DataFrameExplorer
+        self.guide_changed_callback = None   # set by DataFrameExplorer; called whenever uni_g membership changes
+        
+        # inline confirmation for deleting an ingredient's LAST guide entry when
+        # that ingredient is used in one or more recipes
+        self._delete_confirm_msg = widgets.HTML(value='')
+        self._delete_confirm_yes = widgets.Button(
+            description='✓ Delete anyway', button_style='danger',
+            layout=widgets.Layout(width='160px')
+        )
+        self._delete_confirm_no = widgets.Button(
+            description='✗ Cancel', layout=widgets.Layout(width='90px')
+        )
+        
+        self._delete_confirm_yes.on_click(self._on_confirm_delete_ingredient)
+        self._delete_confirm_no.on_click(self._on_cancel_delete_ingredient)
+        self._delete_confirm_row = widgets.HBox(
+            [self._delete_confirm_msg, self._delete_confirm_yes, self._delete_confirm_no],
+            layout=widgets.Layout(display='none', align_items='center',
+                                border='2px solid orange', padding='5px', margin='0 0 5px 0')
+        )
+        self._pending_guide_delete = None  # dict awaiting confirmation, or None
         
         # Add progress bar for loading
         self.progress_bar = widgets.IntProgress(
@@ -100,9 +123,18 @@ class DataFrameWidget:
         else:
             mycolumns = mydf.columns
             if (self.df_type == 'guide'):
-                mycolumns = [x for x in mydf.columns if x not in ['myconversion', 'mycost']]
+                # Remember each displayed row's underlying uni_g index (added by
+                # get_cost_df as '_guide_index') BEFORE stripping internal columns.
+                # on_delete_click uses this instead of fragile multi-column value
+                # matching, which breaks down with NaNs, string-vs-float prices,
+                # or identical rows (e.g. from "duplicate").
+                if '_guide_index' in mydf.columns:
+                    self._guide_row_index_map = dict(enumerate(mydf['_guide_index']))
+                else:
+                    self._guide_row_index_map = {}
+                mycolumns = [x for x in mydf.columns if x not in ['myconversion', 'mycost', '_guide_index']]
             else:
-                mycolumns =  [x for x in mydf.columns if x not in self.hide_columns]
+                mycolumns = [x for x in mydf.columns if x not in self.hide_columns]
             mydf = mydf[mycolumns]
             self.df = mydf
             self.update_column_width()
@@ -241,7 +273,7 @@ class DataFrameWidget:
         
         with self.output:
             self.output.clear_output(wait=True)
-            display(self.grid)
+            display(widgets.VBox([self._delete_confirm_row, self.grid]))
         
         self.progress_bar.value = 100
         self.progress_bar.layout.visibility = 'hidden'
@@ -452,62 +484,7 @@ class DataFrameWidget:
             newval = change['new']
             oldval = self.df.iloc[index][column]
             
-            # if column == 'quantity':
-            #     if self.df_type == 'recipe':
-            #         # ── View / Flatten: header-row quantity → scale, don't edit DB ──
-            #         if index == 0 and self.scale_qty_editable and self.scale_quantity_callback is not None:
-            #             self.scale_quantity_callback(newval, widget)
-            #             return
-            #         # ── Edit mode: normal DB update follows unchanged ─────────────
-            #         recipename = self.df.iloc[0]['ingredient']
-            #         # only update as recipe if in recipe mode
-            #         # check that we are editting a quantity for a valid ingredient
-            #         ingredient_name = self.df.iloc[index]['ingredient']
-            #         if ingredient_name in self.all_ingredients:
-            #             #newsize = parse_quant(newval)
-            #             #oldsize = parse_quant(oldval)
-            #             # print(f"{oldval=}, {newval=}")
-            #             row = self.df.iloc[index]
-            #             # set_df_val(cc.costdf, row, column, newval)
-            #             self.df.loc[index:index, column] = newval
-
-            #             # A pending ingredient — typed but no quantity committed
-            #             # yet — has no matching row in costdf. This is its first
-            #             # commit, triggered by entering a quantity for it.
-            #             if self.cc.get_item_ingredient(recipename, ingredient_name).empty:
-            #                 if str(newval).strip() == '':
-            #                     return
-
-            #                 # find the next already-committed ingredient in display
-            #                 # order, so the row lands in the right costdf position
-            #                 anchor = None
-            #                 for j in range(index + 1, len(self.df)):
-            #                     next_name = self.df.iloc[j]['ingredient']
-            #                     if next_name and not self.cc.get_item_ingredient(recipename, next_name).empty:
-            #                         anchor = next_name
-            #                         break
-
-            #                 anchor = self._next_committed_anchor(recipename, index + 1)
-            #                 self.cc.insert_ingredient(recipename, ingredient_name, newval, before=anchor)
-
-            #                 # this row is now committed — the pending mid-list
-            #                 # insert slot it represented is resolved
-            #                 self._pending_insert = None
-            #                 self._pending_insert_name = None
-
-            #                 self.cc.clear_cost(recipename)
-            #                 self.cc.recipe_cost(recipename)
-            #                 self.setdf(recipename)
-            #                 self.update_display()
-
-            #             elif (newval != oldval):
-            #                 updatecost = True
-            #                 set_df_val(self.cc.costdf, row, column, newval)
-            #                 set_df_val(self.cc.costdf, row, 'cost', 0)
-            #                 self.cc.clear_cost(recipename)
-            #                 self.cc.recipe_cost(recipename)
-            #                 self.setdf(recipename)
-            #                 self.update_display()
+          
             if column == 'quantity':
                 if self.df_type == 'recipe':
                     # ── View / Flatten: header-row quantity → scale, don't edit DB ──
@@ -546,85 +523,7 @@ class DataFrameWidget:
                             self.cc.recipe_cost(recipename)
                             self.setdf(recipename)
                             self.update_display()                
-            # elif column == 'ingredient':
-            #     if self.df_type == 'recipe':
-            #         recipename = self.df.iloc[0]['ingredient']
-            #         is_committed = not self.cc.get_item_ingredient(recipename, oldval).empty
-
-            #         # ── Comma-triggered insert ──────────────────────────────
-            #         # Typing ",X" / "X," (optionally with a name in the other
-            #         # slot) into an EXISTING ingredient's cell requests a new
-            #         # row before/after it, instead of renaming it. Exactly one
-            #         # side of the comma must match the cell's current value.
-            #         if is_committed and ',' in newval:
-            #             before_text, _, after_text = newval.partition(',')
-            #             before_text = before_text.strip()
-            #             after_text = after_text.strip()
-
-            #             direction = None
-            #             insert_name = None
-            #             if before_text == '' and after_text == oldval:
-            #                 direction = 'before'
-            #             elif after_text == '' and before_text == oldval:
-            #                 direction = 'after'
-            #             elif after_text == oldval and before_text != '':
-            #                 direction = 'before'
-            #                 insert_name = before_text
-            #             elif before_text == oldval and after_text != '':
-            #                 direction = 'after'
-            #                 insert_name = after_text
-
-            #             if direction is not None:
-            #                 if insert_name is not None and insert_name not in self.all_ingredients:
-            #                     widget.style.text_color = 'red'
-            #                     return
-            #                 # leave the existing ingredient itself unchanged
-            #                 self.df.loc[index:index, 'ingredient'] = oldval
-            #                 self._pending_insert = (oldval, direction)
-            #                 self._pending_insert_name = insert_name
-            #                 self.update_display()
-            #                 return
-            #             # comma present but doesn't match the pattern — fall
-            #             # through to normal validation (will show red)
-
-            #         # check if valid ingredient
-            #         if newval in self.all_ingredients:
-            #             widget.style.text_color = self.defcolor
-            #             self.df.loc[index:index, 'item'] = recipename
-
-            #             if newval != oldval and newval in self.cc.item_list(recipename)['ingredient'].unique():
-            #                 print('already in recipe')
-            #                 widget.style.text_color = 'red'
-            #                 return
-
-            #             if is_committed:
-            #                 if newval != oldval:
-            #                     try:
-            #                         self.cc.replace_ingredient(recipename, oldval, newval)
-            #                     except ValueError as e:
-            #                         print(e)
-            #                         widget.style.text_color = 'red'
-            #                         return
-            #                     self.cc.clear_cost(recipename)
-            #                     self.cc.recipe_cost(recipename)
-            #                     self.setdf(recipename)
-            #                     self.update_display()
-            #             else:
-            #                 self.df.loc[index:index, 'ingredient'] = newval
-
-            #         else: # newval not a recognized ingredient
-            #             if str(newval) == '':
-            #                 if is_committed:
-            #                     # back to immediate delete — no confirmation step
-            #                     self.cc.removeIngredient(recipename, oldval)
-            #                     self.cc.clear_cost(recipename)
-            #                     self.cc.recipe_cost(recipename)
-            #                     self.setdf(recipename)
-            #                     self.update_display()
-            #                 else:
-            #                     self.df.loc[index:index, 'ingredient'] = ''
-            #             else:
-            #                 widget.style.text_color = 'red'
+          
             elif column == 'ingredient':
                 if self.df_type == 'recipe':
                     recipename = self.df.iloc[0]['ingredient']
@@ -1072,36 +971,100 @@ class DataFrameWidget:
             print("Can't duplicate! Dates must be different")
     
     def on_delete_click(self, button):
-        """Handle delete button click - remove the specific row from uni_g"""
+        """Handle delete button click - remove the specific row from uni_g.
+
+        Uses the real uni_g index recorded for this displayed row (see setdf's
+        '_guide_index' handling) instead of matching by column values -- value
+        matching breaks down with NaNs, string-vs-float prices, or identical
+        rows, all of which get more likely once an ingredient has multiple
+        guide entries.
+
+        If this is the LAST guide entry for the ingredient and it's still used
+        in one or more recipes, deleting it would fully remove the ingredient
+        AND take it out of every recipe that uses it -- so instead of deleting
+        immediately, this asks for confirmation via delete_confirm_callback
+        (set by DataFrameExplorer). If no callback is registered, it falls
+        back to just removing this one price/size entry.
+        """
         row_index = button.tag
         row = self.df.loc[row_index]
-        # Get the index in the original uni_g DataFrame
-        # We need to find the exact row in uni_g that corresponds to this row in our display
-        # Match on multiple columns to ensure we get the exact row
-        match_cols = ['nickname', 'description', 'size', 'price', 'date', 'supplier']
-        match_dict = {col: row[col] for col in match_cols if col in row.index}
-        
-        # Find the index in the original DataFrame
-        mask = True
-        for col, val in match_dict.items():
-            mask = mask & (self.cc.uni_g[col] == val)
-        
-        # If we found a match, delete just that row
-        if any(mask):
-            # Get the index in the original DataFrame
-            original_index = self.cc.uni_g[mask].index[0]
+        nickname = row['nickname']
+
+        original_index = self._guide_row_index_map.get(row_index)
+        if original_index is None or original_index not in self.cc.uni_g.index:
+            return  # stale reference -- nothing to delete
+
+        remaining = self.cc.uni_g.loc[
+            (self.cc.uni_g['nickname'] == nickname) & (self.cc.uni_g.index != original_index)
+        ]
+        is_last_entry = remaining.empty
+
+        if is_last_entry:
+            affected = sorted(set(self.cc.get_parents(nickname)) - {'recipe'})
+            if affected and self.delete_confirm_callback is not None:
+                self.delete_confirm_callback(nickname, original_index, affected)
+                return
+
+        self._remove_guide_row(original_index, nickname)
+
+    def _remove_guide_row(self, original_index, nickname):
+        '''Drop a single uni_g row and refresh search caches/display.'''
+        self.cc.uni_g = self.cc.uni_g.drop(original_index).reset_index(drop=True)
+
+        if hasattr(self, 'all_ingredients'):
+            nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+            ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
+            self.all_ingredients = nicks.union(ingrs)
+
+        if self.guide_changed_callback is not None:
+            self.guide_changed_callback()
+
+        self.setdf(nickname)
+        self.update_display()
+
+
+    def confirmed_cascade_delete(self, nickname, original_index, affected):
+        '''Called by DataFrameExplorer after the user confirms removing the last
+        price entry for `nickname` AND its use in every recipe in `affected`.'''
+        self.cc.uni_g = self.cc.uni_g.drop(original_index).reset_index(drop=True)
+
+        for item in affected:
+            self.cc.removeIngredient(item, nickname)
+        for item in affected:
+            self.cc.clear_cost(item)
+            self.cc.recipe_cost(item)
+
+        if hasattr(self, 'all_ingredients'):
+            nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+            ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
+            self.all_ingredients = nicks.union(ingrs)
             
-            # Delete only this specific row
-            self.cc.uni_g = self.cc.uni_g.drop(original_index).reset_index(drop=True)
-            
-            # Update the search options
-            if hasattr(self, 'all_ingredients'):
-                nicks = set(self.cc.uni_g['nickname'].dropna().unique())
-                ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
-                self.all_ingredients = nicks.union(ingrs)
-                        
-            self.setdf(row['nickname'])
-            self.update_display()
+        if self.guide_changed_callback is not None:
+            self.guide_changed_callback()
+        self.clear_display()
+
+
+    def _on_confirm_delete_ingredient(self, button):
+        """User confirmed: remove the last guide entry AND every recipe row using it."""
+        pending = self._pending_guide_delete
+        self._pending_guide_delete = None
+        self._delete_confirm_row.layout.display = 'none'
+        if pending is None:
+            return
+
+        nickname = pending['nickname']
+        for item in set(pending['parents']):
+            self.cc.removeIngredient(item, nickname)
+            self.cc.clear_cost(item)
+            self.cc.recipe_cost(item)
+
+        self._delete_guide_row(pending['uni_g_index'], nickname)
+
+
+    def _on_cancel_delete_ingredient(self, button):
+        self._pending_guide_delete = None
+        self._delete_confirm_row.layout.display = 'none'
+        self.update_display()
 
             
     def on_search_click(self, button):
@@ -1199,6 +1162,14 @@ class DataFrameWidget:
             self.output.clear_output(wait=True)
             display(self.grid)
         display(self.output)
+        
+    def clear_display(self):
+        '''Clear the grid and lookup state -- used when the previously-displayed
+        item no longer exists (e.g. its last guide entry was just deleted).'''
+        self.df = pd.DataFrame()
+        self.last_lookup = ''
+        self.findtype()
+        self.update_display()
 
 
 class DisplayDataFrameWidget(DataFrameWidget):

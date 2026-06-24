@@ -110,6 +110,7 @@ class CostCalculator:
                 #r['quantity'] = myquant
                 r['$/quantity'] = str(price/quant)
                 r['$/quant'] = f"{price/quant:~.2f}"
+                r['_guide_index'] = i          # track the real uni_g row this came from
                 mydf = pd.concat([mydf, pd.DataFrame([r])], ignore_index=True)
             else:
                 maybeprint(f"! zero cost, {myingr}, {myquant}")

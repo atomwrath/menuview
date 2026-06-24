@@ -150,13 +150,13 @@ class DataFrameExplorer:
         ])
 
         # add recipe
-        addrecipe_text = widgets.Text(value='recipe name')
+        addrecipe_text = widgets.Text(value='', placeholder='recipe name')
         addrecipe_button = widgets.Button(description='create recipe')
         addrecipe_button.on_click(lambda x: self.create_recipe(addrecipe_text))
         addrecipe_hbox = widgets.HBox([addrecipe_text, addrecipe_button])
         
         # add ingredient
-        addingredient_text = widgets.Text(value='ingredient name')
+        addingredient_text = widgets.Text(value='', placeholder='nickname, size, price')
         addingredient_button = widgets.Button(description='create ingredient')
         addingredient_button.on_click(lambda x: self.create_ingredient(addingredient_text))
         addingredient_hbox = widgets.HBox([addingredient_text, addingredient_button])
@@ -197,6 +197,18 @@ class DataFrameExplorer:
             layout={'display': 'none', 'border': '2px solid orange', 'padding': '5px', 'margin': '5px 0'}
         )
         self._rename_target = None   # nick the dialog is currently acting on
+        
+        self.delete_confirm_info = widgets.HTML(value='')
+        self.delete_confirm_yes = widgets.Button(description='✓ Confirm delete', button_style='danger')
+        self.delete_confirm_no = widgets.Button(description='✗ Cancel')
+        self.delete_confirm_yes.on_click(self.on_delete_confirm_yes)
+        self.delete_confirm_no.on_click(self.on_delete_confirm_no)
+        self.delete_confirm_dialog = widgets.VBox(
+            [self.delete_confirm_info,
+            widgets.HBox([self.delete_confirm_yes, self.delete_confirm_no])],
+            layout={'display': 'none', 'border': '2px solid red', 'padding': '5px', 'margin': '5px 0'}
+        )
+        self._delete_pending = None   # (nickname, original_index, affected) awaiting confirmation
 
         # Three-way mode selector: Edit / View / Flatten
         self._mode_changing = False   # guard against observer re-entry
@@ -260,6 +272,8 @@ class DataFrameExplorer:
                                         hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
         
         self.df_widget.scale_quantity_callback = self._on_view_scale_quantity
+        self.df_widget.delete_confirm_callback = self.on_delete_confirm_needed
+        self.df_widget.guide_changed_callback = self.refresh_search_options
         # Get reference to the back button
         self.backbutton = self.df_widget.backbutton
         self.progress_bar = self.df_widget.progress_bar
@@ -278,14 +292,13 @@ class DataFrameExplorer:
             layout=widgets.Layout(width='auto', margin='5px 0')
         )
         
-        # Modify top display to include menu buttons and back button, copy, rename
         topdisplay = widgets.VBox([
             self.menubutton_hbox,
             widgets.HBox([self.backbutton, self.searchinput, copybutton, self.renamebutton]),
             self.rename_dialog,
+            self.delete_confirm_dialog,
             self.dfdisplay
         ], layout={'border': '2px solid green'})
-        
         # mentions display
         self.mdfdisplay = widgets.Output(layout={'border': '1px solid black'})        
         self.bottom_label = widgets.Label(value='items containing...', style=self.fontstyle)
@@ -786,6 +799,12 @@ class DataFrameExplorer:
 
         self.searchinput.value = iname
         
+    def refresh_search_options(self):
+        nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+        ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
+        self.allvals = nicks.union(ingrs)
+        self.searchinput.options = tuple(self.allvals)
+        self.df_widget.all_ingredients = self.allvals
     
     def update_search(self, change):
         '''Respond to searchinput value changes (user typing or trigger_update).
@@ -1058,25 +1077,81 @@ class DataFrameExplorer:
         return menubuttons
     
     def create_ingredient(self, textbox):
-        '''Add new ingredient to unified guide'''
-        # Get the ingredient name and strip whitespace
-        ing_name = textbox.value.strip()
-        
-        # Check if ingredient already exists in nickname column
-        if not self.cc.uni_g.loc[self.cc.uni_g['nickname'] == ing_name].empty:
-            print(f'Ingredient "{ing_name}" already exists in the guide')
+        '''Add a new ingredient to the unified guide -- or, if the nickname
+        already exists, add a new price/size entry for it (an ingredient can
+        have multiple guide rows over time, e.g. across dates/suppliers).
+
+        Accepts "nickname" alone, or "nickname, size, price" with size and
+        price optional and recognized in any order, comma-separated. Size and
+        price must be given together (or not at all) -- a lone one is ignored.
+        For an EXISTING nickname, a size/price pair is required to add a new
+        entry; with no pair given, nothing happens (existing ingredient, no
+        new info to record).
+        '''
+        raw = textbox.value.strip()
+        if not raw:
             return
-            
-        # Create a new row for the unified guide
+
+        try:
+            parsed = parse_ingredient_entry(raw)
+        except ValueError as e:
+            print(str(e))
+            textbox.style.text_color = 'red'
+            return
+
+        if parsed['partial_ignored']:
+            print('Size and price must both be given (or neither) -- ignoring the one you entered.')
+
+        ing_name = parsed['nickname']
+        has_pair = parsed['size'] is not None and parsed['price'] is not None
         current_date = pd.to_datetime('today').strftime('%Y-%m-%d')
+
+        existing = self.cc.uni_g.loc[self.cc.uni_g['nickname'] == ing_name]
+
+        if not existing.empty:
+            # ---- Existing ingredient: only act on a full size+price pair ----
+            if not has_pair:
+                print(f'Ingredient "{ing_name}" already exists in the guide. '
+                    f'Give both a size and a price to add a new entry for it.')
+                textbox.style.text_color = self.defcolor
+                return
+
+            # New row reuses the most recent existing row's other metadata
+            # (description, supplier, brand, allergen, conversion, ...) and
+            # just updates size, price, and date.
+            template = existing.iloc[-1].copy()
+            template['price'] = parsed['price']
+            template['size'] = parsed['size']
+            template['date'] = current_date
+            new_row = pd.DataFrame([template])
+
+            self.cc.uni_g = pd.concat([self.cc.uni_g, new_row], ignore_index=True)
+            self.cc.mark_guide_dirty()
+            self.cc.clear_cost(ing_name)  # cached costs for this ingredient (and its recipes) are stale now
+
+            # If this ingredient is currently on screen, refresh it in place
+            if self.df_widget.last_lookup == ing_name:
+                self.df_widget.lookup_name(ing_name)
+                self.df_widget.update_display()
+
+            textbox.style.text_color = self.defcolor
+            print(f'Added new entry for "{ing_name}": size={parsed["size"]}, price=${parsed["price"]:g}')
+            textbox.value = ''
+            return
+
+        # ---- Brand new ingredient ----
+        textbox.style.text_color = self.defcolor
+        size = parsed['size'] if parsed['size'] is not None else '1 count'
+        price = parsed['price'] if parsed['price'] is not None else 0
+
         new_ingredient = pd.DataFrame(
             data={
                 'supplier': [''],
                 'description': [f'{ing_name}'],
                 'number': [''],
-                'price': [0],
+                'price': [price],
                 'unit': ['ea'],
-                'size': ['1 count'],
+                'size': [size],
                 'brand': [''],
                 'order': [''],
                 'nickname': [ing_name],
@@ -1085,20 +1160,24 @@ class DataFrameExplorer:
                 'conversion': [''],
                 'date': [current_date]}
         )
-        
-        # Add the new ingredient to the guide
+
         self.cc.uni_g = pd.concat([self.cc.uni_g, new_ingredient], ignore_index=True)
         self.cc.mark_guide_dirty()
-        
-        # Update the available values for search
+
         nicks = set(self.cc.uni_g['nickname'].dropna().unique())
         ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
         self.allvals = nicks.union(ingrs)
         self.searchinput.options = tuple(self.allvals)
         self.df_widget.all_ingredients = self.allvals
-        
-        # Inform the user
-        print(f'Created new ingredient: {ing_name}')
+
+        details = ing_name
+        if parsed['size'] is not None:
+            details += f', size={size}'
+        if parsed['price'] is not None:
+            details += f', price=${price:g}'
+        print(f'Created new ingredient: {details}')
+
+        textbox.value = ''
         
     def _refresh_rename_button(self):
         ''' Enable rename only in Edit mode with a valid recipe/ingredient loaded '''
@@ -1142,6 +1221,39 @@ class DataFrameExplorer:
             self.rename_info_label.value = str(e)
             return
         self._after_rename_or_duplicate(old_name, new_name, renamed=True)
+        
+    def on_delete_confirm_needed(self, nickname, original_index, affected):
+        '''Called by DataFrameWidget when deleting the last guide entry for
+        `nickname` would also remove it from one or more recipes.'''
+        self._delete_pending = (nickname, original_index, affected)
+        names = ', '.join(affected)
+        plural = 'recipe' if len(affected) == 1 else 'recipes'
+        self.delete_confirm_info.value = (
+            f'<b style="color:red">⚠ "{nickname}" has no other price entries. '
+            f'Deleting this one will fully remove "{nickname}" and take it out of '
+            f'{len(affected)} {plural} that use it: {names}. This cannot be undone.</b>'
+        )
+        self.delete_confirm_dialog.layout.display = 'flex'
+
+    def on_delete_confirm_yes(self, b=None):
+        if self._delete_pending is None:
+            return
+        nickname, original_index, affected = self._delete_pending
+        self.df_widget.confirmed_cascade_delete(nickname, original_index, affected)
+        self._delete_pending = None
+        self.delete_confirm_dialog.layout.display = 'none'
+
+        # nickname no longer exists -- refresh search caches and clear the display
+        nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+        ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
+        self.allvals = nicks.union(ingrs)
+        self.searchinput.options = tuple(self.allvals)
+        self.df_widget.all_ingredients = self.allvals
+        self.searchinput.value = ''
+
+    def on_delete_confirm_no(self, b=None):
+        self._delete_pending = None
+        self.delete_confirm_dialog.layout.display = 'none'
 
     def on_duplicate_confirm(self, b=None):
         old_name = self._rename_target

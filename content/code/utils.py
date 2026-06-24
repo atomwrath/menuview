@@ -1,10 +1,102 @@
 import os
+import re
 from pint import UnitRegistry
 
 ureg = UnitRegistry()
 Q_ = ureg.Quantity
 
 printon = False
+
+import re  # add at top of utils.py if not already imported
+
+_SIZE_RMAP = (('10/cn', '96 floz'), ('/', '*'), ('#', 'lb'),
+              ('dz', '*12 count'), ('ct', 'count'), ('pk', 'count'),
+              ('doz', '*12 count'), ('gl', 'gal'), ('flat', '8 lb'),
+              ('av', '*1'), ('lt', 'l'))
+
+def _try_parse_size(tok):
+    """Strict size parse: returns a Quantity only if tok actually parses
+    as mass, volume, or count -- unlike parse_size(), never silently
+    defaults to '1' on failure."""
+    s = tok.lower()
+    for old, new in _SIZE_RMAP:
+        s = s.replace(old, new)
+    s = s.replace('**', '*')
+    try:
+        q = Q_(s)
+    except Exception:
+        return None
+    mass_dim = ureg.kg.dimensionality
+    vol_dim = ureg.liter.dimensionality
+    if q.dimensionality == mass_dim or q.dimensionality == vol_dim or q.dimensionless:
+        return q
+    return None
+
+
+def parse_ingredient_entry(text):
+    tokens = [t.strip() for t in text.split(',') if t.strip()]
+    if not tokens:
+        raise ValueError('Please enter an ingredient nickname.')
+
+    price = None
+    size = None
+    nickname_parts = []
+    ambiguous = []  # bare numbers with no '$' and no '.' -- could be a count size or a price
+
+    for tok in tokens:
+        is_dollar = tok.startswith('$')
+        bare = tok[1:].strip() if is_dollar else tok
+        is_plain_number = bool(re.fullmatch(r'\d+(\.\d+)?', bare))
+
+        # ---- definite price: '$' prefix, or a literal decimal point ----
+        if is_plain_number and (is_dollar or '.' in bare):
+            val = float(bare)
+            if val > 0 and price is None:
+                price = val
+            else:
+                # invalid (<=0), or price slot already taken -- surface as-is
+                nickname_parts.append(tok)
+            continue
+
+        # ---- bare whole number, no '$'/decimal: ambiguous, resolve after the loop ----
+        if is_plain_number:
+            ambiguous.append(tok)
+            continue
+
+        # ---- definite size: explicit unit text, parses to mass/volume/count ----
+        q = _try_parse_size(tok)
+        if q is not None and size is None:
+            size = tok
+        else:
+            # either not a size at all, or size slot already taken
+            nickname_parts.append(tok)
+
+    # Resolve ambiguous bare numbers against whichever slots are still open.
+    # This is what lets "2 lb, 12" and "12, 2 lb" both land 12 as the price --
+    # the explicit-unit size always wins the size slot first (above), so by
+    # the time we get here a leftover bare number falls into price instead.
+    for tok in ambiguous:
+        val = float(tok)
+        if size is None:
+            size = f'{val:g} count'
+        elif price is None:
+            price = val
+        else:
+            nickname_parts.append(tok)
+
+    nickname = ', '.join(nickname_parts).strip()
+    if not nickname:
+        raise ValueError("Couldn't find a nickname in that entry -- a nickname is required.")
+
+    # size and price are a pair: only keep them if BOTH were given.
+    # A lone size or lone price is ambiguous/incomplete, so it's discarded
+    # rather than silently applied with the other field defaulted.
+    partial = (size is None) != (price is None)
+    if partial:
+        size = None
+        price = None
+
+    return {'nickname': nickname, 'size': size, 'price': price, 'partial_ignored': partial}
 
 def maybeprint(*mymess):
     if (printon == True):
@@ -147,9 +239,10 @@ def parse_size(sizestr):
     convert to magnitude and units with pint library
     ex: 6/10 oz --> 6*10 oz --> {60} {oz}
     '''
-    rmap = (('10/cn', '96 floz'), ('/', '*'), ('#', 'lb'), 
-            ('dz', '*12 count'), ('ct', 'count'), ('pk', 'count'), ('doz', '*12 count'), 
-            ('gl', 'gal'),('flat', '8 lb'), ('av', '*1'), ('lt','l'))
+    rmap = _SIZE_RMAP
+    # rmap = (('10/cn', '96 floz'), ('/', '*'), ('#', 'lb'), 
+    #         ('dz', '*12 count'), ('ct', 'count'), ('pk', 'count'), ('doz', '*12 count'), 
+    #         ('gl', 'gal'),('flat', '8 lb'), ('av', '*1'), ('lt','l'))
     if not isinstance(sizestr, str):
         sizestr = '1'
     sizestr = sizestr.lower()

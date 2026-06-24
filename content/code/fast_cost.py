@@ -160,7 +160,7 @@ class FastCostMixin:
 
         convr = set(results['conversion'].dropna().unique())
         rows = []
-        for _, r in results.iterrows():
+        for idx, r in results.iterrows():
             quant = _parse_size(r['size'])
             price = r['price']
 
@@ -208,6 +208,7 @@ class FastCostMixin:
                 d['myconversion'] = str(myconv)
                 d['$/quantity'] = str(price / quant)
                 d['$/quant'] = f"{price / quant:~.2f}"
+                d['_guide_index'] = idx          # track the real uni_g row this came from
                 rows.append(d)
             else:
                 maybeprint(f"! zero cost, {myingr}, {myquant}")
