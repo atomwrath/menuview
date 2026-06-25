@@ -36,7 +36,11 @@ class DataFrameWidget:
         self._navigating_back = False           # True while on_back_click is executing;
                                                 # tells update_search not to clear scale
         self._pending_insert = None        # (anchor_ingredient, 'before'|'after') awaiting a mid-list slot
-        self._pending_insert_name = None   # ingredient name to pre-fill that slot with, or None for a blank slot            # row index -> delete Button widget, for direct enable/disable
+        self._pending_insert_name = None   # ingredient name to pre-fill that slot with, or None for a blank slot # row index -> delete Button widget, for direct enable/disable
+        self.add_ingredient_widget = None  # bottom blank row's ingredient box (focus target)
+        self.ingredient_widgets = []       # every ingredient Combobox currently on screen
+        
+        self.add_ingredient_widget = None 
         self._last_deleted = None   # snapshot of the most recently deleted ingredient row, for reorder-restore
         self.search_history = []
         self.scale_stack = []    # parallel to search_history; entry[i] = scale active at level i
@@ -274,6 +278,13 @@ class DataFrameWidget:
         with self.output:
             self.output.clear_output(wait=True)
             display(widgets.VBox([self._delete_confirm_row, self.grid]))
+            
+        # Move the cursor back to the blank "add ingredient" row
+        if self.df_type == 'recipe' and self.add_ingredient_widget is not None:
+            try:
+                self.add_ingredient_widget.focus()
+            except Exception:
+                pass
         
         self.progress_bar.value = 100
         self.progress_bar.layout.visibility = 'hidden'
@@ -332,6 +343,8 @@ class DataFrameWidget:
             
         # Update progress
         self.progress_bar.value = 5
+        self.add_ingredient_widget = None   # <-- add this line
+        self.ingredient_widgets = []        # <-- add this line
             
         # if we have a recipe df, add row at end for ability to add to ingredient to recipe
         if self.df_type == 'recipe':
@@ -527,6 +540,7 @@ class DataFrameWidget:
             elif column == 'ingredient':
                 if self.df_type == 'recipe':
                     recipename = self.df.iloc[0]['ingredient']
+                    newval = newval.strip()
                     is_committed = not self.cc.get_item_ingredient(recipename, oldval).empty
 
                     # ── Comma-triggered insert ──────────────────────────────
@@ -859,6 +873,12 @@ class DataFrameWidget:
                             layout=self.getlayout(col)
                         )
                         cell_widget.observe(lambda change, col=col, cell_widget=cell_widget: on_text_change(change, col, cell_widget), 'value')
+                        self.ingredient_widgets.append(cell_widget)   # <-- add this line
+                        
+                        # The trailing blank row is always last — remember its
+                        # ingredient box so we can refocus it after a rebuild
+                        if index == len(self.df) - 1:
+                            self.add_ingredient_widget = cell_widget
                     else:
                         cell_widget = widgets.Text(
                             value=str(myval), 
@@ -879,26 +899,6 @@ class DataFrameWidget:
                 cell_widget.layout.visibility = 'hidden'
             items.append(cell_widget)
             
-    # def on_back_click(self, button):
-    #     """Handle back button click"""
-    #     if len(self.search_history) > 1:
-    #         self.search_history.pop()  # Remove current
-    #         previous = self.search_history[-1]  # Get previous without popping it
-            
-    #         # Store current search_history
-    #         saved_history = self.search_history.copy()
-            
-    #         # Look up the previous item without adding to history
-    #         self.setdf(previous)
-            
-    #         # Restore history
-    #         self.search_history = saved_history
-            
-    #         # Update the back button state
-    #         self.backbutton.disabled = len(self.search_history) <= 1
-            
-    #         # Update display
-    #         self.update_display()
     def on_back_click(self, button):
         '''Navigate to the previous item in the search history.
  
@@ -1066,6 +1066,17 @@ class DataFrameWidget:
         self._delete_confirm_row.layout.display = 'none'
         self.update_display()
 
+            
+    def refresh_ingredient_options(self):
+        ''' Push the current set of valid ingredient names into every
+            ingredient Combobox currently rendered, so a newly created (or
+            removed) ingredient shows up as an autocomplete hint right away
+            -- without waiting for the next full grid rebuild.
+        '''
+        options = tuple(self.all_ingredients)
+        for w in self.ingredient_widgets:
+            w.options = options
+            
             
     def on_search_click(self, button):
         # Retrieve the row from the DataFrame using the button's 'tag' attribute

@@ -805,6 +805,7 @@ class DataFrameExplorer:
         self.allvals = nicks.union(ingrs)
         self.searchinput.options = tuple(self.allvals)
         self.df_widget.all_ingredients = self.allvals
+        self.df_widget.refresh_ingredient_options()   # <-- add this line
     
     def update_search(self, change):
         '''Respond to searchinput value changes (user typing or trigger_update).
@@ -1169,6 +1170,7 @@ class DataFrameExplorer:
         self.allvals = nicks.union(ingrs)
         self.searchinput.options = tuple(self.allvals)
         self.df_widget.all_ingredients = self.allvals
+        self.df_widget.refresh_ingredient_options()
 
         details = ing_name
         if parsed['size'] is not None:
