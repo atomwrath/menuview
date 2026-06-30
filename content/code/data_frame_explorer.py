@@ -21,7 +21,7 @@ class DataFrameExplorer:
         self.excel_filename = 'amc_menu_database.xlsx'
         
         # Store original enabled columns for switching between modes
-        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number']
+        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number', 'note']
         self.enabled_columns = self.all_enabled_columns.copy()
         self.hide_columns = ['note', 'conversion', 'equ quant', 'menu price']
         self.cc = cc
@@ -209,17 +209,6 @@ class DataFrameExplorer:
             layout={'display': 'none', 'border': '2px solid red', 'padding': '5px', 'margin': '5px 0'}
         )
         self._delete_pending = None   # (nickname, original_index, affected) awaiting confirmation
-
-        # Three-way mode selector: Edit / View / Flatten
-        self._mode_changing = False   # guard against observer re-entry
-        self.mode_selector = widgets.Dropdown(
-            options=['Edit', 'View', 'Flatten'],
-            value='Edit',
-            layout=widgets.Layout(width='110px', height='33px')
-        )
-        self.mode_selector.observe(self.on_mode_change, names='value')
-            
-        # self.hide_toggleVBox = widgets.HBox(hide_toggles)
         
         hide_toggles = [widgets.Label(value='Show/Hide columns:', layout=widgets.Layout(width='40%'))]
         for col in self.hide_columns:
@@ -268,10 +257,16 @@ class DataFrameExplorer:
         
         # composition
         self.dfdisplay = widgets.Output(layout={ 'overflow': 'scroll', 'border': '1px solid black'})
-        self.df_widget = DataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=self.enabled_columns, 
-                                        hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay, trigger=self.trigger_update)
-        
-        self.df_widget.scale_quantity_callback = self._on_view_scale_quantity
+        self.df_widget = DataFrameWidget(
+            pd.DataFrame(), width='90px',
+            enabled_columns=self.enabled_columns,
+            all_enabled_columns=self.all_enabled_columns,
+            hide_columns=self.hide_columns, cc=self.cc, output=self.dfdisplay,
+            trigger=self.trigger_update,
+            widget_mode='Edit',
+        )
+        self.df_widget.scale_quantity_callback = self.df_widget._default_scale_quantity_callback
+        self.df_widget.mode_changed_callback   = self._on_root_mode_changed
         self.df_widget.delete_confirm_callback = self.on_delete_confirm_needed
         self.df_widget.guide_changed_callback = self.refresh_search_options
         # Get reference to the back button
@@ -332,414 +327,24 @@ class DataFrameExplorer:
             topdisplay, 
             bottom_display
         ])
-   
         
-    # def toggle_edit_mode(self, b=None):
-    #     '''Toggle between edit mode and view mode.
- 
-    #     Edit → View : use _activate_view_mode, then reload to render in view.
-    #     View → Edit : clear any active scaling so the original (unscaled)
-    #                   recipe is shown, then reload to render editable cells.
-    #     '''
-    #     if self.edit_mode:
-    #         # ── Edit → View ──────────────────────────────────────────────────
-    #         self._activate_view_mode()      # flips flag, updates UI, no reload
-    #         if self.df_widget.last_lookup:
-    #             self.df_widget.lookup_name(self.df_widget.last_lookup)
-    #             self.df_widget.update_display()
- 
-    #     else:
-    #         # ── View → Edit ──────────────────────────────────────────────────
-    #         # Clear scaling: user must see original recipe quantities to edit
-    #         self.df_widget.scale_factor = None
-    #         self.df_widget.scale_stack = [None] * len(self.df_widget.search_history)
-    #         self._scale_pending = None
- 
-    #         self.edit_mode = True
-    #         self.mode_toggle_button.description = 'Edit Mode'
-    #         self.mode_toggle_button.button_style = 'warning'
-    #         self.enabled_columns = self.all_enabled_columns.copy()
-    #         for widget_obj in self.editor_widgets.values():
-    #             widget_obj.layout.display = 'flex'
-    #         self.df_widget.enabled_columns = self.enabled_columns
- 
-    #         # Reload the original (unscaled) recipe
-    #         if self.df_widget.last_lookup:
-    #             self.df_widget.lookup_name(self.df_widget.last_lookup)
-    #             self.df_widget.update_display()
-    
-    def on_mode_change(self, change):
-        """Handle the Edit / View / Flatten mode dropdown."""
-        if self._mode_changing:
-            return
-
-        new_mode = change['new']
-
-        if new_mode == 'Edit':
-            # Clear any active scaling so original quantities are editable.
-            self.df_widget.scale_factor = None
-            self.df_widget.scale_stack  = [None] * len(self.df_widget.search_history)
-            self._scale_pending = None
-            self.edit_mode = True
-            self.df_widget.scale_qty_editable = False
-            self.enabled_columns = self.all_enabled_columns.copy()
-            for w in self.editor_widgets.values():
-                w.layout.display = 'flex'
-            
-            self.df_widget.enabled_columns = self.enabled_columns
-            self.renamebutton.layout.display = 'flex'
-            if self.df_widget.last_lookup:
-                self.df_widget.lookup_name(self.df_widget.last_lookup)
-                self.df_widget.update_display()
-            self._refresh_rename_button()
-
-        elif new_mode == 'View':
-            self._activate_view_mode()
-            self.df_widget.scale_qty_editable = True
-            if self.df_widget.last_lookup:
-                self.df_widget.lookup_name(self.df_widget.last_lookup)
-                self.df_widget.update_display()
-
-        elif new_mode == 'Flatten':
-            # If coming from Edit, activate view-mode state (no editing,
-            # no pre-existing scale to retain).
-            if self.edit_mode:
-                self._activate_view_mode()
-            self.df_widget.scale_qty_editable = True 
-            # If coming from View, scale_factor is preserved automatically.
-            self._show_flattened_recipe()
+    def _on_root_mode_changed(self, mode):
+        '''Keep Explorer-owned chrome that depends on the root's mode in sync.
+        Editor tools (load database / create recipe / create ingredient) are no
+        longer hidden by mode — they stay visible always.
+        '''
+        edit = (mode == 'Edit')
+        self.edit_mode = edit
+        self.enabled_columns = self.df_widget.enabled_columns
+        self.renamebutton.layout.display = 'flex' if edit else 'none'
+        self.rename_dialog.layout.display = 'flex' if edit else 'none'
+        self._refresh_rename_button()
 
 
     def _activate_view_mode(self):
-        """Switch to View state without triggering a data reload.
-
-        Used from on_mode_change and from trigger_update (auto-switch on
-        scaled lookup).  The _mode_changing guard prevents the Dropdown
-        observer from firing recursively.
-        """
-        if not self.edit_mode:
-            return   # already in view mode
-
-        self.edit_mode = False
-
-        self._mode_changing = True
-        self.mode_selector.value = 'View'
-        self._mode_changing = False
-
-        self.enabled_columns = []
-        for w in self.editor_widgets.values():
-            w.layout.display = 'none'
-        self.df_widget.enabled_columns = self.enabled_columns
-        self.df_widget.scale_qty_editable = True 
-        # rename is an edit-mode-only action
-        self.renamebutton.layout.display = 'none'
-        self.rename_dialog.layout.display = 'none'
-        # Deliberately no reload — the caller owns navigation.
-        
-    def _on_view_scale_quantity(self, new_qty_str, widget):
-        """Scale the displayed recipe to the quantity the user typed.
- 
-        Called by DataFrameWidget.on_text_change when the header-row
-        quantity cell is edited in View or Flatten mode.  The widget
-        reference is passed so we can colour it red on bad input without
-        needing an extra state flag.
- 
-        Validation
-        ──────────
-        • Must parse as a pint quantity (parse_quant succeeds).
-        • Must share the dimensionality of the recipe yield, OR a
-          do_conversion path must exist (e.g. volume ↔ weight).
-        • Resulting scale factor must be > 0.
- 
-        On failure  : widget text turns red; display unchanged.
-        On success  : widget text reset; scale_factor updated; display reloaded.
-        """
-        item = self.df_widget.last_lookup
-        if not item:
+        if self.df_widget.widget_mode != 'Edit':
             return
- 
-        recipe_entry = self.cc.get_recipe_entry(item)
-        if recipe_entry.empty:
-            return
- 
-        recipe_yield_str = str(recipe_entry.squeeze()['quantity']).strip()
-        input_str = new_qty_str.strip()
- 
-        if not input_str:
-            return
- 
-        try:
-            ry = parse_quant(recipe_yield_str)
-            pq = parse_quant(input_str)
- 
-            if pq is None or ry is None or ry.m == 0:
-                widget.style.text_color = 'red'
-                return
- 
-            if pq.dimensionality == ry.dimensionality:
-                scale = float((pq / ry).to_reduced_units().m)
-            else:
-                # Try ingredient-specific conversion (e.g. cups of batter → g)
-                converted = self.cc.do_conversion(item, input_str, recipe_yield_str)
-                if converted is None:
-                    widget.style.text_color = 'red'
-                    return
-                scale = float((converted / ry).to_reduced_units().m)
- 
-            if scale <= 0:
-                widget.style.text_color = 'red'
-                return
- 
-            # ── Valid ─────────────────────────────────────────────────────────
-            widget.style.text_color = self.defcolor
-            self.df_widget.scale_factor = scale
- 
-            if self.mode_selector.value == 'Flatten':
-                self._show_flattened_recipe()
-            else:
-                self.df_widget.lookup_name(item)
-                self.df_widget.update_display()
- 
-        except Exception as exc:
-            print(f'[view_scale] {exc}')
-            widget.style.text_color = 'red'
-
-        
-    def _sort_flattened(self, df):
-        """Sort flattened ingredients: weight (g) desc → volume (ml) desc → other.
-
-        Assumes quantities have already been normalised by
-        _normalize_to_standard_units, so most values end with ' g' or ' ml'.
-        Falls back to pint parsing for any unconverted strings.
-        """
-        def _key(qty_str):
-            s = str(qty_str).strip()
-            try:
-                if s.endswith(' g'):
-                    return (0, -float(s[:-2].strip()))
-                if s.endswith(' ml'):
-                    return (1, -float(s[:-3].strip()))
-                # Unconverted — use pint dimensionality
-                q = parse_quant(s)
-                if q is not None:
-                    if q.dimensionality == parse_quant('1 kg').dimensionality:
-                        return (0, -float(q.to('g').magnitude))
-                    if q.dimensionality == parse_quant('1 liter').dimensionality:
-                        return (1, -float(q.to('ml').magnitude))
-            except Exception:
-                pass
-            return (2, 0.0)
-
-        df = df.copy()
-        df['_sort_key'] = df['quantity'].apply(_key)
-        df = df.sort_values('_sort_key').drop(columns=['_sort_key'])
-        return df.reset_index(drop=True)
-
-    
-    def _normalize_to_standard_units(self, ingredient, qty_str):
-        """Convert qty_str to grams (preferred) or ml, falling back to original.
-
-        Conversion priority
-        ───────────────────
-        1. If already in a weight unit  → convert directly to g.
-        2. If already in a volume unit  → convert directly to ml.
-        3. Try do_conversion to g using the ingredient's conversion factors.
-        4. Try do_conversion to ml using the ingredient's conversion factors.
-        5. Return the original string unchanged.
-        """
-        try:
-            q = parse_quant(qty_str)
-            if q is None:
-                return qty_str
-
-            weight_dim = parse_quant('1 kg').dimensionality
-            volume_dim = parse_quant('1 liter').dimensionality
-
-            # Already a weight → g
-            if q.dimensionality == weight_dim:
-                return f'{q.to("g").magnitude:.2f} g'
-
-            # Always try weight first — even for volume quantities.
-            # e.g. "1 cup flour" → "120.00 g" if a g/cup conversion exists.
-            result = self.cc.do_conversion(ingredient, qty_str, '1 g')
-            if result is not None:
-                return f'{result.to("g").magnitude:.2f} g'
-
-            # Weight conversion failed — fall back to ml.
-            # Covers volume quantities with no weight conversion factor,
-            # and count/other units that have a volume conversion factor.
-            if q.dimensionality == volume_dim:
-                return f'{q.to("ml").magnitude:.2f} ml'
-
-            result = self.cc.do_conversion(ingredient, qty_str, '1 ml')
-            if result is not None:
-                return f'{result.to("ml").magnitude:.2f} ml'
-
-
-        except Exception:
-            pass
-        return qty_str
-
-
-    def _show_flattened_recipe(self):
-        """Flatten the current recipe and display it through the DataFrameWidget
-        grid so it matches the look of View mode exactly.
-
-        Pipeline
-        ────────
-        1. flatten_recipe  → base ingredients with correctly scaled costs
-        2. normalize       → quantities converted to g / ml where possible
-        3. sort            → weight desc, volume desc, other
-        4. equ quant       → added when a unit is set in the equ quant box
-        5. header row      → item='recipe' prepended so findtype() works
-        6. cost multipliers→ cost N.Nx columns added as in normal view
-        7. render          → df_widget renders with enabled_columns=[] (read-only)
-        """
-        item = self.df_widget.last_lookup
-        if not item:
-            return
-
-        recipe_entry = self.cc.get_recipe_entry(item)
-        if recipe_entry.empty:
-            with self.dfdisplay:
-                self.dfdisplay.clear_output(wait=True)
-                print(f'"{item}" is not a recipe — nothing to flatten.')
-            return
-
-        # ── Determine yield quantity (with optional scale) ────────────────────
-        recipe_yield_str = str(recipe_entry.squeeze()['quantity']).strip()
-        scale = self.df_widget.scale_factor
-
-        # quant_str is used only for the header-row display; it is NOT passed to
-        # flatten_recipe.  Passing a pint-formatted scaled string (e.g. "6.00 serving"
-        # instead of "12 servings") causes a unit-mismatch when flatten_recipe
-        # re-derives ratio = quant / recipe_yield, producing wrong quantities and costs.
-        if scale is not None:
-            try:
-                quant_str = f"{(parse_quant(recipe_yield_str) * scale):~.2f}"
-            except Exception:
-                quant_str = recipe_yield_str
-        else:
-            quant_str = recipe_yield_str
-
-        # Ensure ingredient costs are current before flattening
-        self.cc.recipe_cost(item)
-
-        # ── Flatten at ratio=1 (original yield) ──────────────────────────────
-        # Scale is applied to the result below, mirroring _apply_scaling in view mode.
-        try:
-            flat_df = self.cc.flatten_recipe(item, recipe_yield_str)
-        except Exception as exc:
-            with self.dfdisplay:
-                self.dfdisplay.clear_output(wait=True)
-                print(f'Could not flatten "{item}": {exc}')
-            return
-
-        if flat_df is None or flat_df.empty:
-            with self.dfdisplay:
-                self.dfdisplay.clear_output(wait=True)
-                print(f'No base ingredients found for "{item}".')
-            return
-
-        flat_df = flat_df.copy()
-
-        # ── Apply scale factor (mirrors DataFrameWidget._apply_scaling) ───────────
-        # Scaling quantities and costs here instead of inside flatten_recipe avoids
-        # the pint unit-abbreviation mismatch that caused wrong values.
-        if scale is not None and abs(scale - 1.0) > 1e-9:
-            def _scale_qty(q):
-                try:
-                    pq = parse_quant(str(q))
-                    if pq is not None and hasattr(pq, 'm') and pq.m > 0:
-                        return f"{(pq * scale)}"
-                except Exception:
-                    pass
-                return q
-
-            flat_df['quantity'] = flat_df['quantity'].apply(_scale_qty)
-            if 'cost' in flat_df.columns:
-                flat_df['cost'] = flat_df['cost'].apply(
-                    lambda c: float(c) * scale
-                    if pd.notna(c) and str(c) not in ('', 'nan') else c
-                )
-        # ── Add equ quant BEFORE normalising ──────────────────────────────────
-        # add_equ_quant must receive the original quantity strings ("1/8 tsp",
-        # "2 cup", …) — not the display-rounded "0.00 ml" that normalisation
-        # would produce for very small quantities.
-        equ_unit = self.df_widget.equ_quant_unit
-        equ_prec = self.df_widget.equ_quant_precision
-        if equ_unit:
-            flat_df = flat_df.apply(
-                lambda row: self.cc.add_equ_quant(row, equ_unit, precision=equ_prec),
-                axis=1
-            )
-
-        # ── Normalise quantities to g / ml for display ────────────────────────
-        flat_df['quantity'] = flat_df.apply(
-            lambda row: self._normalize_to_standard_units(
-                row['ingredient'], str(row['quantity'])
-            ),
-            axis=1
-        )
-
-        # ── Sort ──────────────────────────────────────────────────────────────
-        flat_df = self._sort_flattened(flat_df)
-
-        # ── Build header row (makes findtype() see df_type = 'recipe') ────────
-        total_cost = 0.0
-        if 'cost' in flat_df.columns:
-            try:
-                total_cost = flat_df['cost'].apply(
-                    lambda x: float(x) if pd.notna(x) else 0.0
-                ).sum()
-            except (TypeError, ValueError):
-                pass
-
-        header = {col: '' for col in flat_df.columns}
-        header.update({'item': 'recipe', 'ingredient': item,
-                       'quantity': quant_str, 'cost': total_cost})
-        if equ_unit and 'equ quant' in flat_df.columns:
-            header['equ quant'] = ''
-
-        flat_df['item'] = item   # ingredient rows belong to this recipe
-        display_df = pd.concat(
-            [pd.DataFrame([header]), flat_df], ignore_index=True
-        )
-
-        # ── Select and order columns (mirrors setdf recipe logic) ─────────────
-        colorder = ['item', 'ingredient', 'quantity']
-        if equ_unit and 'equ quant' in display_df.columns:
-            colorder.append('equ quant')
-        if 'cost' in display_df.columns:
-            colorder.append('cost')
-        display_df = reorder_columns(display_df, colorder)
-
-        # Drop hidden columns (but keep equ quant when active)
-        hide = set(self.df_widget.hide_columns)
-        if equ_unit:
-            hide.discard('equ quant')
-        else:
-            hide.add('equ quant')
-        display_df = display_df[[c for c in display_df.columns if c not in hide]]
-
-        # Add cost-multiplier columns (same as setdf)
-        if 'cost' in display_df.columns:
-            for cm in self.df_widget.cost_multipliers:
-                if cm > 0:
-                    display_df[f'cost {cm:.1f}x'] = display_df['cost'].apply(
-                        lambda x: float(x) * cm
-                        if pd.notna(x) and str(x) not in ('', 'nan') else ''
-                    )
-
-        display_df = display_df.reset_index(drop=True)
-
-        # ── Render via DataFrameWidget (read-only) ────────────────────────────
-        self.df_widget.df             = display_df
-        self.df_widget.df_type        = 'recipe'
-        self.df_widget.enabled_columns = []       # no editing in flatten mode
-        self.df_widget.update_column_width()
-        self.df_widget.update_display()
-
+        self.df_widget.set_widget_mode('View', refresh=False)
 
     
     def trigger_mentions(self, iname):
@@ -772,14 +377,12 @@ class DataFrameExplorer:
         
         
         # In flatten mode the display is managed by _show_flattened_recipe.
-        if self.mode_selector.value == 'Flatten':
+        if self.df_widget.widget_mode == 'Flatten':
             if self.df_widget._navigating_back:
-                # Back button — switch to View and let update_search handle it.
-                self._mode_changing = True
-                self.mode_selector.value = 'View'
-                self._mode_changing = False
+                self.df_widget.set_widget_mode('View', refresh=False)
                 self.searchinput.value = iname
                 return
+            # falls through to normal navigation below, same as before
             # Menu buttons and lookup buttons both fall through to the normal
             # navigation path below.  update_search will sync the dropdown to
             # View (for menu buttons); _activate_view_mode handles it for
@@ -831,10 +434,8 @@ class DataFrameExplorer:
             self.df_widget._navigating_back = False
 
             # ── Sync dropdown if leaving Flatten via any non-back navigation ──
-            if self.mode_selector.value == 'Flatten' and not navigating_back:
-                self._mode_changing = True
-                self.mode_selector.value = 'View'
-                self._mode_changing = False
+            if self.df_widget.widget_mode == 'Flatten' and not navigating_back:
+                self.df_widget.set_widget_mode('View', refresh=False)
  
             if self._scale_pending is not None:
                 # Forward scaled navigation
@@ -844,7 +445,7 @@ class DataFrameExplorer:
                 self.df_widget.scale_factor = None
  
             self._scale_pending = None
-            
+            self.df_widget.close_child()
             self.df_widget.lookup_name(iname)
             self.df_widget.update_display()
             self.update_mentions(iname)
@@ -861,15 +462,17 @@ class DataFrameExplorer:
         self.cc.change_cost_method(self.cost_select_method[method])  # picker + memo flush + zero
         self.df_widget.lookup_name(self.df_widget.last_lookup)
         self.df_widget.update_display()
+        self.df_widget.cascade_settings_to_children()
 
     def set_cost_multipliers(self, change):
         self.df_widget.cost_multipliers = change['new']
         if (self.df_widget.df_type == 'recipe'):
-            if self.mode_selector.value == 'Flatten':
-                self._show_flattened_recipe()
+            if self.df_widget.widget_mode == 'Flatten':
+                self.df_widget._render_flattened()
             else:
                 self.df_widget.lookup_name(self.df_widget.last_lookup)
                 self.df_widget.update_display()
+            self.df_widget.cascade_settings_to_children()
         
     def hide_col(self, change, col):
         ''' set a column to hide or not
@@ -883,6 +486,7 @@ class DataFrameExplorer:
         self.df_widget.hide_columns = self.hide_columns
         self.df_widget.lookup_name(self.df_widget.last_lookup)
         self.df_widget.update_display()
+        self.df_widget.cascade_settings_to_children()
         
     def _compute_scale_factor(self, ingredient, parent_quantity):
         '''Return the ratio parent_quantity / recipe_yield, or None on failure.
@@ -994,11 +598,12 @@ class DataFrameExplorer:
 
         self.df_widget.hide_columns = self.hide_columns
         if self.df_widget.last_lookup:
-            if self.mode_selector.value == 'Flatten':
-                self._show_flattened_recipe()
+            if self.df_widget.widget_mode == 'Flatten':
+                self.df_widget._render_flattened()
             else:
                 self.df_widget.lookup_name(self.df_widget.last_lookup)
                 self.df_widget.update_display()
+            self.df_widget.cascade_settings_to_children()
         
     # def update_mentions(self, iname):
     #     self.mdf_widget.search_name(iname)
@@ -1073,7 +678,6 @@ class DataFrameExplorer:
             button.on_click(make_menu_handler(menu))
             menubuttons.append(button)
 
-        menubuttons.append(self.mode_selector)
         menubuttons.append(self.progress_bar)
         return menubuttons
     
