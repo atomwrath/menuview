@@ -514,6 +514,12 @@ class DataFrameWidget:
             pass
         return qty_str
     
+    def _make_subgrid(self, items_slice):
+                return widgets.GridBox(
+                    items_slice,
+                    layout=widgets.Layout(grid_template_columns=self._grid_template_columns),
+                )
+    
     def update_display(self):
         self.progress_bar.layout.visibility = 'visible'
         self.progress_bar.value = 0
@@ -521,11 +527,7 @@ class DataFrameWidget:
         self.progress_bar.value = 20
         self.grid = self._create_grid()
         self.progress_bar.value = 90
-
-        divider = widgets.HTML(
-            value=f"<hr style='border: none; border-top: 2px dashed #888; margin: 8px 0 2px 0;'>"
-                f"<div style='color:#888; font-size:0.85em; margin-bottom:4px;'>▾ viewing: {self.child_ingredient}</div>"
-        )
+        
         rows = [self._delete_confirm_row]
 
         if self.last_lookup:
@@ -537,8 +539,22 @@ class DataFrameWidget:
             mode_dd = self._build_mode_dropdown(('Edit', 'View'), layout=widgets.Layout(width='160px'))
             rows.append(widgets.HBox([widgets.Label(value='Mode:'), mode_dd]))
 
-        rows.append(self.grid)
-        rows.append(self.child_output)   # child renders its own bordered frame inside here
+        # rows.append(self.grid)
+        # rows.append(self.child_output)   
+        # # child renders its own bordered frame inside here
+        if self.child_widget is not None and self.child_ingredient in self._row_names:
+            split_pos = self._row_names.index(self.child_ingredient)
+            _, split_end = self._row_item_blocks[split_pos]
+            top_items = self._grid_items[:split_end]
+            bottom_items = self._grid_items[split_end:]
+
+            rows.append(self._make_subgrid(top_items))
+            rows.append(self.child_output)   # child renders right after its row
+            if bottom_items:
+                rows.append(self._make_subgrid(bottom_items))
+        else:
+            rows.append(self.grid)
+            rows.append(self.child_output)
 
         with self.output:
             self.output.clear_output(wait=True)
@@ -692,11 +708,28 @@ class DataFrameWidget:
                 progress = 10 + int((index + 1) / total_rows * 80)
                 self.progress_bar.value = min(progress, 90)
         
+        # Remember row boundaries + names so update_display can split the grid
+        # around whichever row currently has a "view below" child open.
+        self._row_item_blocks = []
+        block_start = self.num_cols  # header occupies the first block
+        for _ in range(len(self.df)):
+            self._row_item_blocks.append((block_start, block_start + self.num_cols))
+            block_start += self.num_cols
+
+        if self.df_type in ('recipe', 'mentions'):
+            self._row_names = list(self.df['ingredient'])
+        elif self.df_type == 'guide':
+            self._row_names = list(self.df['nickname'])
+        else:
+            self._row_names = []
+
+        self._grid_items = items
+        
         # Create the grid with all items
         grid = widgets.GridBox(items, layout=widgets.Layout(grid_template_columns=f"repeat({self.num_cols}, {self.width})"))
         # set the width of the first column to 100 pixels
         grid.layout.grid_template_columns = f"{self.width} {'px '.join([str(self.column_width[x]) for x in self.df.columns])}px"
-        
+        self._grid_template_columns = grid.layout.grid_template_columns
         # Update progress and hide progress bar
         self.progress_bar.value = 100
         self.progress_bar.layout.visibility = 'hidden'
