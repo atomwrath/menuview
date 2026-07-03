@@ -79,6 +79,12 @@ class FastCostMixin:
             self._guide_nrows = -1
         self._maps_nrows = len(df)
         self._cost_col = df.columns.get_loc("cost") if "cost" in df.columns else None
+        if self._cost_col is not None and df["cost"].dtype != 'float64':
+            # Belt-and-suspenders: guarantee float64 here so every later
+            # per-cell write (._emit, clear_cost's .loc write, etc.) can't
+            # hit the "incompatible dtype" warning against a stale int64
+            # column, regardless of how costdf got into that state.
+            df["cost"] = df["cost"].astype('float64')
 
         if df.empty:
             return
@@ -331,7 +337,8 @@ class FastCostMixin:
         self._memo = {}
         self._leaf_cost = {}                  # every leaf reprices under the new method
         if "cost" in self.costdf.columns:
-            self.costdf.loc[:, "cost"] = 0.0
+            # Full-column reassignment -- same reasoning as read_from_xlsx.
+            self.costdf['cost'] = pd.Series(0.0, index=self.costdf.index, dtype='float64')
 
     # ── structural edits we can catch directly ────────────────────────────
     def removeIngredient(self, item, ingredient):

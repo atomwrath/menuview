@@ -5,6 +5,7 @@ from IPython.display import display, clear_output
 import re
 from datetime import datetime
 import numpy as np
+from utils import _try_parse_size, Q_, parse_unit_conversion, quantity_cost_and_conv
 
 class OrderGuideReader:
     """
@@ -19,6 +20,7 @@ class OrderGuideReader:
         self.all_found_dates = []
         self.order_date = None  # Date from the order guide
         self.nickname_widgets = {}  # Store nickname input widgets
+        self.size_review_widgets = {}  # Store size/price correction widgets
         self.file_type = None  # Store the type of file ('guide' or 'confirmation')
         self.setup_interface()
         
@@ -107,24 +109,29 @@ class OrderGuideReader:
             margin='10px 0',
             display='none'  # Hidden initially
         ))
+
+        # Size/price review area
+        self.size_review_area = widgets.VBox([
+            widgets.HTML(value="<h4>Review Sizes</h4>")
+        ], layout=widgets.Layout(
+            width='100%',
+            border='1px solid #ccc',
+            padding='10px',
+            margin='10px 0',
+            display='none'  # Hidden initially
+        ))
         
         # Assemble the interface
         self.file_selector = widgets.HBox([self.file_dropdown, self.refresh_button])
         self.button_row = widgets.HBox([self.process_button, self.update_button, self.save_button])
-        # self.container = widgets.VBox([
-        #     widgets.HTML(value="<h3>Order File Price/Quantity Updater</h3>"),
-        #     self.file_selector,
-        #     self.button_row,
-        #     self.status_output,
-        #     self.nickname_area
-        # ])
         self.container = widgets.VBox([
             widgets.HTML(value="<h3>Update from order guide/confirmation</h3>"),
             self.file_selector,
             self.date_area,  # Add date area here
             self.button_row,
             self.status_output,
-            self.nickname_area
+            self.nickname_area,
+            self.size_review_area
         ])
         
     def on_date_selected(self, change):
@@ -240,6 +247,9 @@ class OrderGuideReader:
             try:
                 # Process the order file
                 self.order_data = self.read_order_file(selected_file)
+                # Discard fully-blank rows (e.g. trailing blank rows picked up
+                # from the source spreadsheet) before counting/reporting/flagging.
+                self.order_data = self._drop_blank_rows(self.order_data)
                 self.update_button.disabled = False
                 
                 # Update date picker with the found date
@@ -271,6 +281,12 @@ class OrderGuideReader:
                     print("Please assign nicknames to items below or they will be skipped during import.")
                 else:
                     self.nickname_area.layout.display = 'none'
+
+                # Check for suspicious/unparseable sizes and let the user fix them
+                self.create_size_review_interface()
+                if self.size_review_area.layout.display != 'none':
+                    print("Please review flagged sizes/prices below before updating.")
+                elif without_nickname == 0:
                     print("Ready to update prices in database.")
                 
             except Exception as e:
@@ -278,48 +294,97 @@ class OrderGuideReader:
                 import traceback
                 traceback.print_exc()
                 self.update_button.disabled = True
+                
+    def _drop_blank_rows(self, df):
+        ''' Discard rows with no real content -- no product number,
+            description, size, or price. These are typically trailing blank
+            rows from the source spreadsheet and shouldn't be treated as
+            items needing a nickname or a size correction.
+        '''
+        if df is None or df.empty:
+            return df
+        check_cols = [c for c in ('number', 'description', 'size', 'price') if c in df.columns]
+        if not check_cols:
+            return df
+        is_blank = df[check_cols].apply(
+            lambda col: col.isna() | col.astype(str).str.strip().isin(['', 'nan', 'None'])
+        ).all(axis=1)
+        return df.loc[~is_blank].reset_index(drop=True)
     
     def create_nickname_interface(self):
         """Create interface for assigning nicknames to items without them"""
+        self.nickname_widgets = {}
+        try:
+            self._build_nickname_interface()
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            # Surface the error directly in the area itself -- this box doesn't
+            # scroll/hide the way status_output can, so it can't get missed.
+            self.nickname_area.children = [
+                widgets.HTML(value=(
+                    f"<h4>Assign Nicknames</h4>"
+                    f"<p style='color:#b00'>Error building the nickname list: {e}</p>"
+                    f"<pre style='font-size:11px; white-space:pre-wrap'>{tb}</pre>"
+                ))
+            ]
+            self.nickname_area.layout.display = 'flex'
+
+    def _build_nickname_interface(self):
         # Clear previous widgets
         self.nickname_area.children = [
-            widgets.HTML(value="<h4>Assign Nicknames</h4><p>Items without nicknames will not be added to the database unless you assign a nickname below:</p>")
+            widgets.HTML(value=(
+                "<h4>Assign Nicknames</h4>"
+            ))
         ]
-        self.nickname_widgets = {}
-        
+
         # Get items without nicknames
         items_without_nickname = self.order_data[self.order_data['nickname'].isna()].copy()
-        
+
         if len(items_without_nickname) == 0:
             self.nickname_area.layout.display = 'none'
             return
-            
+
         # Sort by description for easier reading
         items_without_nickname = items_without_nickname.sort_values('description')
-        
+
+        # Existing nicknames, used for autocomplete hints. Cast to str before
+        # sorting/comparing -- a non-string nickname would otherwise raise a
+        # TypeError and abort this whole method before it ever displays anything.
+        if self.cc is not None and hasattr(self.cc, 'uni_g') and 'nickname' in self.cc.uni_g.columns:
+            existing_nicknames = tuple(sorted({str(n) for n in self.cc.uni_g['nickname'].dropna().unique()}))
+        else:
+            existing_nicknames = tuple()
+        known_nicknames = set(existing_nicknames)
+
         # Create widgets for each item
         for idx, row in items_without_nickname.iterrows():
-            # Product description and number
             description = row['description'] if pd.notna(row['description']) else "No description"
             product_num = row['number'] if pd.notna(row['number']) else "No number"
-            
-            # Create text input for nickname
-            nickname_input = widgets.Text(
+
+            nickname_input = widgets.Combobox(
                 value='',
                 placeholder='Enter nickname',
+                options=existing_nicknames,
+                ensure_option=False,
                 description='',
                 layout=widgets.Layout(width='200px')
             )
-            
-            # Store reference to widget
+
+            def _on_nickname_change(change, widget=nickname_input, known=known_nicknames):
+                val = change['new'].strip()
+                if val and val not in known:
+                    widget.style.text_color = 'red' # new ingredient
+                else:
+                    widget.style.text_color = None  # default: empty, or matches existing
+            nickname_input.observe(_on_nickname_change, names='value')
+
             self.nickname_widgets[idx] = nickname_input
-            
-            # Prepare item details
+
             size_info = f", {row['size']}" if pd.notna(row['size']) else ""
             price_info = f", ${row['price']}" if pd.notna(row['price']) else ""
             order_info = f", Qty: {row['order']}" if pd.notna(row['order']) and row['order'] != 0 else ""
-            
-            # Create row with description and input
+
             row_widget = widgets.HBox([
                 widgets.HTML(
                     value=f"<b>{description}</b> (#{product_num}{size_info}{price_info}{order_info})",
@@ -327,22 +392,17 @@ class OrderGuideReader:
                 ),
                 nickname_input
             ])
-            
-            # Add to nickname area
             self.nickname_area.children = list(self.nickname_area.children) + [row_widget]
-        
-        # Add "apply all" button for convenience
+
         apply_button = widgets.Button(
             description='Apply Nicknames',
             button_style='info',
             layout=widgets.Layout(width='150px')
         )
         apply_button.on_click(self.apply_nicknames)
-        
         self.nickname_area.children = list(self.nickname_area.children) + [apply_button]
-        
-        # Show the nickname area
-        self.nickname_area.layout.display = 'block'
+
+        self.nickname_area.layout.display = 'flex'
     
     def apply_nicknames(self, button):
         """Apply the entered nicknames to the order data"""
@@ -356,7 +416,8 @@ class OrderGuideReader:
                 nickname_count += 1
                 
                 # Update the widget style to show it's been applied
-                widget.style.background = '#d4edda'
+                widget.layout.border = '2px solid #73cf89'
+                widget.style.text_color = None
         
         # Update status
         with self.status_output:
@@ -368,6 +429,308 @@ class OrderGuideReader:
                 print(f"{remaining} items still need nicknames or will be skipped.")
             else:
                 print("All items now have nicknames. Ready to update prices.")
+
+        # A newly-assigned nickname may match an ingredient that already has
+        # a price on file, or may itself have a size issue -- re-check now
+        # that order_data['nickname'] is up to date, so "recent: ?" turns
+        # into an actual comparison instead of waiting for a full reprocess.
+        self.create_size_review_interface()
+                
+    # A ratio outside [1/RATIO_THRESHOLD, RATIO_THRESHOLD] gets flagged for review.
+    # This is a heads-up, not a hard limit -- the same value can be re-applied
+    # unchanged and it will still go through.
+    SIZE_RATIO_THRESHOLD = 4.0
+
+    def _rate_for_row(self, row):
+        ''' $/quantity for a guide row, as a pint Quantity. Mirrors
+            CostCalculator's pricing: rows whose unit is 'lb' are priced
+            per pound regardless of size. Returns None if unresolvable.
+        '''
+        price = row.get('price')
+        if pd.isna(price):
+            return None
+        try:
+            price = float(str(price).replace('$', ''))
+        except (TypeError, ValueError):
+            return None
+        if price <= 0:
+            return None
+
+        unit = row.get('unit')
+        if isinstance(unit, str) and unit.strip().lower() == 'lb':
+            quant = Q_('1 lb')
+        else:
+            size = row.get('size')
+            quant = _try_parse_size(str(size)) if pd.notna(size) else None
+            if quant is None or quant.m == 0:
+                return None
+
+        return price / quant
+
+    def _format_rate(self, rate):
+        if rate is None:
+            return '?'
+        unit_str = f"{rate.units:~}"
+        unit_str = re.sub(r'^1\s*/\s*', '', unit_str)  # pint renders reciprocal units as "1 / count"
+        return f"${rate.magnitude:.2f}/{unit_str}"
+
+    def _comparable_rates(self, new_rate, old_rate, conversions):
+        ''' Try to express new_rate in the same units as old_rate so they
+            can be compared directly -- using the ingredient's own unit
+            conversions (e.g. "1 lb per 2 ct") when the two rates aren't
+            already the same dimensionality (e.g. $/lb vs $/ct).
+            Returns (new_value, old_value) as plain floats in old_rate's
+            units, or None if no comparison is possible.
+        '''
+        if new_rate is None or old_rate is None:
+            return None
+        try:
+            if new_rate.dimensionality == old_rate.dimensionality:
+                return new_rate.to(old_rate.units).magnitude, old_rate.magnitude
+        except Exception:
+            pass
+
+        convlist = list(parse_unit_conversion(list(conversions))) if conversions else []
+        if not convlist:
+            return None
+        try:
+            # old_rate is a $/X rate, so its .units are the *reciprocal* of X
+            # (e.g. "1 / pound"). We need "1 X" itself (e.g. "1 pound") as the
+            # quantity to price using new_rate -- that's units**-1, not units.
+            one_old_unit = Q_(1, old_rate.units ** -1)
+            converted, _ = quantity_cost_and_conv(new_rate, one_old_unit, convlist)
+        except Exception:
+            return None
+        if converted is None:
+            return None
+        return converted, old_rate.magnitude
+
+    def _nickname_conversions(self, row, existing):
+        ''' Known conversion strings for this ingredient: the row's own
+            conversion first (if any), then any others on record.
+        '''
+        conversions = []
+        row_conv = row.get('conversion')
+        if isinstance(row_conv, str) and row_conv.strip():
+            conversions.append(row_conv)
+        for c in existing['conversion'].dropna().unique():
+            if isinstance(c, str) and c.strip() and c not in conversions:
+                conversions.append(c)
+        return conversions
+
+    def _flag_size_issues(self, df):
+        ''' Return {idx: {'reason', 'new_rate', 'old_rate'}} (rates are pint
+            Quantities or None) for rows whose size/price look suspicious:
+              - size can't be parsed into a mass/volume/count quantity
+              - the resulting $/quantity, compared like-for-like via any
+                known unit conversion, is more than SIZE_RATIO_THRESHOLD x
+                (or less than 1/SIZE_RATIO_THRESHOLD x) the most recent
+                known price for the same nickname
+        '''
+        flagged = {}
+        for idx, row in df.iterrows():
+            size = row.get('size')
+            nickname = row.get('nickname')
+
+            # Look up the most recent known price for this nickname FIRST,
+            # independent of whether the new row's own size parses -- so a
+            # row that just got a nickname assigned (but still has a bad
+            # size) can still show "recent: $X" instead of "recent: ?".
+            existing = None
+            old_rate = None
+            if self.cc is not None and pd.notna(nickname) and nickname != '':
+                existing = self.cc.uni_g.loc[self.cc.uni_g['nickname'] == nickname]
+                if not existing.empty:
+                    recent = existing.sort_values('date', ascending=False).iloc[0]
+                    old_rate = self._rate_for_row(recent)
+
+            q = _try_parse_size(str(size)) if pd.notna(size) else None
+            if q is None or q.m == 0:
+                flagged[idx] = {'reason': 'unknown/unparseable size', 'new_rate': None, 'old_rate': old_rate}
+                continue
+
+            new_rate = self._rate_for_row(row)
+            if new_rate is None:
+                continue
+
+            if existing is None or existing.empty or old_rate is None:
+                continue
+
+            conversions = self._nickname_conversions(row, existing)
+            comparable = self._comparable_rates(new_rate, old_rate, conversions)
+            if comparable is None:
+                continue
+            new_val, old_val = comparable
+            if old_val == 0:
+                continue
+            ratio = new_val / old_val
+
+            if ratio > self.SIZE_RATIO_THRESHOLD or ratio < 1 / self.SIZE_RATIO_THRESHOLD:
+                flagged[idx] = {
+                    'reason': f'$/qty is {ratio:.1f}x the last known price for "{nickname}"',
+                    'new_rate': new_rate,
+                    'old_rate': old_rate,
+                }
+
+        return flagged
+
+    def _row_is_resolved(self, size_val, price_val, unit, old_rate, conversions):
+        ''' Check a single (possibly just-edited) row against the same
+            criteria used to flag it, without touching the wider flag list.
+        '''
+        q = _try_parse_size(str(size_val)) if size_val else None
+        if q is None or q.m == 0:
+            return False
+
+        pseudo_row = {'size': size_val, 'price': price_val, 'unit': unit}
+        new_rate = self._rate_for_row(pseudo_row)
+        if new_rate is None:
+            return False
+
+        if old_rate is None:
+            # No baseline to compare against -- size now parses, that's all we can check.
+            return True
+
+        comparable = self._comparable_rates(new_rate, old_rate, conversions)
+        if comparable is None:
+            return False  # can't compare -- leave it as unresolved rather than claim success
+
+        new_val, old_val = comparable
+        if old_val == 0:
+            return False
+        ratio = new_val / old_val
+        return (1 / self.SIZE_RATIO_THRESHOLD) <= ratio <= self.SIZE_RATIO_THRESHOLD
+
+    def create_size_review_interface(self):
+        """Create interface for correcting rows with suspicious/unparseable sizes"""
+        self.size_review_area.children = [
+            widgets.HTML(value=(
+                "<h4>Review Sizes</h4>"
+                "<p>These items have a size that couldn't be read, or a price that "
+                "looks far off (more than 4x) from the last known price. Correct "
+                "the size and/or price below if needed -- the $/quantity comparison "
+                "updates as you edit -- then click Apply Corrections.</p>"
+            ))
+        ]
+        self.size_review_widgets = {}
+
+        if self.order_data is None:
+            self.size_review_area.layout.display = 'none'
+            return
+
+        flagged = self._flag_size_issues(self.order_data)
+        if not flagged:
+            self.size_review_area.layout.display = 'none'
+            return
+
+        for idx, info in flagged.items():
+            row = self.order_data.loc[idx]
+            description = row['description'] if pd.notna(row['description']) else "No description"
+            product_num = row['number'] if pd.notna(row['number']) else "No number"
+            unit = row.get('unit')
+            nickname = row.get('nickname')
+
+            old_rate = info['old_rate']
+            conversions = []
+            if self.cc is not None and pd.notna(nickname) and nickname != '':
+                existing = self.cc.uni_g.loc[self.cc.uni_g['nickname'] == nickname]
+                if not existing.empty:
+                    conversions = self._nickname_conversions(row, existing)
+
+            size_input = widgets.Text(
+                value=str(row['size']) if pd.notna(row['size']) else '',
+                placeholder='e.g. 6/10 oz',
+                continuous_update=False,
+                layout=widgets.Layout(width='120px')
+            )
+            price_input = widgets.Text(
+                value=str(row['price']) if pd.notna(row['price']) else '',
+                placeholder='price',
+                continuous_update=False,
+                layout=widgets.Layout(width='80px')
+            )
+            rate_display = widgets.HTML(
+                value=f"<span style='color:inherit'>recent: {self._format_rate(old_rate)} "
+                      f"&rarr; new: {self._format_rate(info['new_rate'])}</span>"
+            )
+
+            row_widget = widgets.HBox([
+                widgets.HTML(
+                    value=f"<b>{description}</b> (#{product_num}) &mdash; {info['reason']}",
+                    layout=widgets.Layout(width='420px', overflow='hidden')
+                ),
+                widgets.Label(value='size:'),
+                size_input,
+                widgets.Label(value='price:'),
+                price_input,
+                rate_display,
+            ], layout=widgets.Layout(padding='2px'))
+
+            def _recompute(change, size_w=size_input, price_w=price_input,
+                           rate_w=rate_display, unit=unit, old_rate=old_rate,
+                           conversions=conversions, row_w=row_widget):
+                pseudo_row = {'size': size_w.value, 'price': price_w.value, 'unit': unit}
+                new_rate = self._rate_for_row(pseudo_row)
+                rate_w.value = (f"<span style='color:inherit'>recent: {self._format_rate(old_rate)} "
+                                 f"&rarr; new: {self._format_rate(new_rate)}</span>")
+                # Any further edit invalidates a previous "applied" checkmark
+                # until Apply Corrections is clicked again.
+                row_w.layout.border = ''
+
+            size_input.observe(_recompute, names='value')
+            price_input.observe(_recompute, names='value')
+
+            self.size_review_widgets[idx] = {
+                'size_input': size_input,
+                'price_input': price_input,
+                'row_widget': row_widget,
+                'unit': unit,
+                'old_rate': old_rate,
+                'conversions': conversions,
+            }
+
+            self.size_review_area.children = list(self.size_review_area.children) + [row_widget]
+
+        apply_button = widgets.Button(
+            description='Apply Corrections',
+            button_style='info',
+            layout=widgets.Layout(width='160px')
+        )
+        apply_button.on_click(self.apply_size_corrections)
+        self.size_review_area.children = list(self.size_review_area.children) + [apply_button]
+
+        self.size_review_area.layout.display = 'flex'
+
+    def apply_size_corrections(self, button):
+        """Write corrected size/price values back into order_data, and mark
+           each row resolved (green outline) or not -- without removing any
+           rows from view.
+        """
+        applied = 0
+        for idx, entry in self.size_review_widgets.items():
+            size_input = entry['size_input']
+            price_input = entry['price_input']
+            row_widget = entry['row_widget']
+
+            new_size = size_input.value.strip()
+            new_price_str = price_input.value.strip()
+            if new_size:
+                self.order_data.at[idx, 'size'] = new_size
+            if new_price_str:
+                try:
+                    self.order_data.at[idx, 'price'] = float(new_price_str.replace('$', ''))
+                except ValueError:
+                    pass
+            applied += 1
+
+            resolved = self._row_is_resolved(
+                size_input.value, price_input.value,
+                entry['unit'], entry['old_rate'], entry['conversions']
+            )
+            row_widget.layout.border = '2px solid #28a745' if resolved else ''
+
+        with self.status_output:
+            print(f"Applied {applied} size/price correction(s).")
     
     def read_order_file(self, file_path):
         """

@@ -336,6 +336,28 @@ class CostCalculator:
         self.costdf['item'] = pd.Categorical(self.costdf['item'])
         self.costdf['ingredient'] = pd.Categorical(self.costdf['ingredient'])
         
+    def _assign_columns_safe(self, df, expected_columns, sheet_label=''):
+        ''' Assign expected_columns to df, tolerating extra trailing columns
+            (e.g. a stray column added upstream by another script/tool).
+            Extra columns are dropped and ignored. Fewer columns than expected
+            is still an error, since we can't safely guess what's missing.
+        '''
+        n_have = df.shape[1]
+        n_want = len(expected_columns)
+        if n_have > n_want:
+            # print(f"Warning: '{sheet_label}' sheet has {n_have} columns, "
+            #     f"expected {n_want}. Dropping {n_have - n_want} extra "
+            #     f"trailing column(s): {list(df.columns[n_want:])}")
+            df = df.iloc[:, :n_want]
+        elif n_have < n_want:
+            raise ValueError(
+                f"'{sheet_label}' sheet has {n_have} columns, expected "
+                f"{n_want}: {expected_columns}. File appears to be missing "
+                f"column(s) — cannot safely assign names."
+            )
+        df.columns = expected_columns
+        return df
+    
     def read_from_xlsx(self, filepath):
         # read the Excel file into a pandas dataframe
         excel_data = pd.read_excel(
@@ -353,7 +375,7 @@ class CostCalculator:
             print('cant find guide sheet')
             return
         
-        self.uni_g.columns = self.guide_columns
+        self.uni_g = self._assign_columns_safe(self.uni_g, self.guide_columns, self.guide_sheet_name)
         # if the first row is just the names of the columns, remove, reset index at 0
         if self.uni_g.iloc[0][self.uni_g.columns[0]] == self.uni_g.columns[0]:
             self.uni_g.columns = list(self.uni_g.iloc[0])
@@ -368,7 +390,7 @@ class CostCalculator:
         # load menu/recipe list
         self.costdf = excel_data[self.cost_sheet_name]
         
-        self.costdf.columns = self.cost_columns
+        self.costdf = self._assign_columns_safe(self.costdf, self.cost_columns, self.cost_sheet_name)
         
         # if the first row is just the names of the columns, remove, reset index at 0
         if self.costdf.iloc[0][self.costdf.columns[0]] == self.costdf.columns[0]:
@@ -392,7 +414,12 @@ class CostCalculator:
         # state still happens to have one, so it doesn't linger unused.
         if 'saved cost' in self.costdf.columns:
             self.costdf = self.costdf.drop(columns=['saved cost'])
-        self.costdf.loc[:, 'cost'] = 0.0
+        # Full-column reassignment (not .loc[:, 'cost'] = 0.0) guarantees a
+        # fresh float64 column even if Excel gave us 'cost' as int64 (e.g.
+        # every value happened to be a whole number). Writing a float into a
+        # lingering int64 column later is what triggers pandas' "Setting an
+        # item of incompatible dtype" FutureWarning.
+        self.costdf['cost'] = pd.Series(0.0, index=self.costdf.index, dtype='float64')
         
 
     def write_cc(self, filename):
@@ -867,6 +894,48 @@ class CostCalculator:
 
         self.clear_cost(new_name)
         return True
+    
+    def delete_recipe(self, name):
+        ''' Permanently delete a recipe: removes its own definition (the
+            recipe header row and its ingredient list) and removes it from
+            every other recipe/category that references it as an ingredient.
+
+            Returns the list of other recipes/categories that were updated.
+            Raises ValueError if name isn't a recipe.
+        '''
+        name = str(name).strip()
+
+        recipe_entry = self.get_recipe_entry(name)
+        if recipe_entry.empty:
+            raise ValueError(f'"{name}" is not a recipe — only recipes can be deleted')
+
+        # other recipes/categories that use this recipe as an ingredient --
+        # compute BEFORE mutating anything
+        affected = sorted(set(self.get_parents(name)) - {'recipe'})
+
+        # remove it from everywhere it's referenced as an ingredient
+        for item in affected:
+            self.removeIngredient(item, name)
+
+        # remove its own definition: the header row (item=='recipe') and
+        # every row describing what's inside it (item==name)
+        self.costdf = self.costdf.drop(
+            self.costdf.loc[
+                ((self.costdf['item'] == 'recipe') & (self.costdf['ingredient'] == name))
+                | (self.costdf['item'] == name)
+            ].index
+        ).reset_index(drop=True)
+
+        for col in ('item', 'ingredient'):
+            if isinstance(self.costdf[col].dtype, pd.CategoricalDtype):
+                self.costdf[col] = self.costdf[col].cat.remove_unused_categories()
+
+        # recompute costs for everything that used to depend on it
+        for item in affected:
+            self.clear_cost(item)
+            self.recipe_cost(item)
+
+        return affected
     
     def mark_guide_dirty(self):
         ''' Force find_nick's cached guide index to rebuild on next access.

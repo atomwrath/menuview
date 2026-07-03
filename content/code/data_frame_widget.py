@@ -122,7 +122,7 @@ class DataFrameWidget:
         self.df = mydf
         self.findtype()
         if (self.df_type == 'recipe'):
-            colorder = ['item', 'ingredient', 'quantity', 'cost', 'equ quant']
+            colorder = ['item', 'ingredient', 'quantity', 'equ quant', 'cost']
             mydf = reorder_columns(mydf, colorder)
             mycolumns = [x for x in mydf.columns if x not in self.hide_columns]
             mydf = mydf[mycolumns]
@@ -135,6 +135,10 @@ class DataFrameWidget:
             # This is purely cosmetic – cc.costdf is never touched.
             if self.scale_factor is not None:
                 mydf = self._apply_scaling(mydf, self.scale_factor)
+            # add_costx appends "cost N.Nx" columns at the end -- pull them
+            # back to sit right after 'cost', and make sure 'equ quant' is
+            # right after 'quantity', regardless of what got added above.
+            mydf = order_recipe_columns(mydf)
             self.df = mydf
             self.update_column_width()
 

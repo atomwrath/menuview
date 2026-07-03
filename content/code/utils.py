@@ -9,16 +9,49 @@ printon = False
 
 import re  # add at top of utils.py if not already imported
 
-_SIZE_RMAP = (('10/cn', '96 floz'), ('/', '*'), ('#', 'lb'),
+_SIZE_RMAP = (('10/cn', '96 floz'), ('fo', 'floz'), ('/', '*'), ('#', 'lb'),
               ('dz', '*12 count'), ('ct', 'count'), ('pk', 'count'),
               ('doz', '*12 count'), ('gl', 'gal'), ('flat', '8 lb'),
               ('av', '*1'), ('lt', 'l'))
+
+# Dash characters that commonly turn up in pasted/scanned spreadsheet data
+# in place of a plain ASCII hyphen (en dash, em dash, unicode minus, etc.)
+_DASH_CHARS = ('\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2212')
+
+_CT_RANGE_RE = re.compile(r'^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*ct$')
+
+def _normalize_size_str(sizestr):
+    ''' Normalize whitespace and dash variants that commonly show up in
+        pasted/scanned spreadsheet data (non-breaking spaces, en/em dashes,
+        the unicode minus sign) so downstream parsing doesn't silently fail
+        on them and fall back to a default of "1".
+    '''
+    s = sizestr.replace('\xa0', ' ')
+    for d in _DASH_CHARS:
+        s = s.replace(d, '-')
+    return re.sub(r'\s+', ' ', s).strip()
+
+def _avg_ct_range(sizestr):
+    ''' Handle "9-12CT" / "9-12 CT" style count ranges explicitly: average
+        the two counts, e.g. "9-12ct" -> (9+12)/2 = 10.5 count.
+        Returns a Quantity, or None if sizestr isn't this exact pattern.
+    '''
+    m = _CT_RANGE_RE.match(sizestr)
+    if not m:
+        return None
+    lo, hi = float(m.group(1)), float(m.group(2))
+    return Q_(f'{(lo + hi) / 2:g} count')
 
 def _try_parse_size(tok):
     """Strict size parse: returns a Quantity only if tok actually parses
     as mass, volume, or count -- unlike parse_size(), never silently
     defaults to '1' on failure."""
-    s = tok.lower()
+    s = _normalize_size_str(tok.lower())
+
+    ct_range = _avg_ct_range(s)
+    if ct_range is not None:
+        return ct_range
+
     for old, new in _SIZE_RMAP:
         s = s.replace(old, new)
     s = s.replace('**', '*')
@@ -240,12 +273,15 @@ def parse_size(sizestr):
     ex: 6/10 oz --> 6*10 oz --> {60} {oz}
     '''
     rmap = _SIZE_RMAP
-    # rmap = (('10/cn', '96 floz'), ('/', '*'), ('#', 'lb'), 
-    #         ('dz', '*12 count'), ('ct', 'count'), ('pk', 'count'), ('doz', '*12 count'), 
-    #         ('gl', 'gal'),('flat', '8 lb'), ('av', '*1'), ('lt','l'))
     if not isinstance(sizestr, str):
         sizestr = '1'
-    sizestr = sizestr.lower()
+    sizestr = _normalize_size_str(sizestr.lower())
+
+    # explicit count-range handling, e.g. "9-12ct" -> average = 10.5 count
+    ct_range = _avg_ct_range(sizestr)
+    if ct_range is not None:
+        return ct_range
+
     # if there is an '-' assume we are dealing with a range of values
     # use that average value
     if ('-' in sizestr):
@@ -402,6 +438,24 @@ def reorder_columns(df, columnorder):
     reordered_df = df[new_column_order]
     
     return reordered_df
+
+def order_recipe_columns(df):
+    ''' Enforce consistent recipe column ordering:
+          item, ingredient, quantity, equ quant (if present), cost,
+          then any cost-modifier columns (e.g. "cost 3.0x", "cost 3.5x" --
+          anything other than 'cost' itself whose name starts with 'cost')
+          right after cost, then everything else in its existing order.
+
+        Needed because add_costx() always appends its new column at the end
+        of the DataFrame, regardless of where 'cost' currently sits -- so a
+        plain reorder_columns() call made before add_costx() runs can't
+        anticipate where those columns will land.
+    '''
+    cols = list(df.columns)
+    base = [c for c in ('item', 'ingredient', 'quantity', 'equ quant', 'cost') if c in cols]
+    cost_mods = [c for c in cols if c not in base and c.lower().startswith('cost')]
+    rest = [c for c in cols if c not in base and c not in cost_mods]
+    return df[base + cost_mods + rest]
 
 
 def format_guide(s2):

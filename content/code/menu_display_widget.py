@@ -2,7 +2,7 @@ import pandas as pd
 import ipywidgets as widgets
 from IPython.display import display, clear_output, HTML
 from costcalulator import CostCalculator
-from utils import reorder_columns
+from utils import reorder_columns, order_recipe_columns
 from menu_styles_components import *
 
 class MenuDisplayWidget:
@@ -100,7 +100,7 @@ class MenuDisplayWidget:
         self.findtype()
         
         if self.df_type == 'recipe':
-            colorder = ['item', 'ingredient', 'quantity', 'cost', 'equ quant']
+            colorder = ['item', 'ingredient', 'quantity', 'equ quant', 'cost']
             
             # Add allergen column
             mydf['allergen'] = mydf['ingredient'].apply(lambda x: ', '.join(self.cc.findNset_allergens(x)))
@@ -108,6 +108,7 @@ class MenuDisplayWidget:
             mydf = reorder_columns(mydf, colorder)
             mycolumns = [x for x in mydf.columns if x not in self.hide_columns]
             mydf = mydf[mycolumns]
+            mydf = order_recipe_columns(mydf)
             
             # Clear allergen for menus
             if mydf.at[0, 'ingredient'] in ['breakfast', 'lunch', 'dinner', 'desserts']:
