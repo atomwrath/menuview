@@ -26,7 +26,7 @@ jobs:
 
       - name: Build the JupyterLite site
         run: |
-          jupyter lite build --contents content --output-dir dist --ignore-sys-prefix
+          jupyter lite build --contents content --output-dir dist
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
