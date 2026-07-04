@@ -40,19 +40,22 @@ class RecipeGridWidget(anywidget.AnyWidget):
     modes     = traitlets.List(traitlets.Unicode(),
                                default_value=['Edit', 'View', 'Flatten']).tag(sync=True)
     ingredients = traitlets.List(traitlets.Unicode()).tag(sync=True)  # shared datalist
+    col_widths  = traitlets.Dict().tag(sync=True)   # column name -> pixel width, from
+                                                      # DataFrameWidget.update_column_width()
     focus_seq   = traitlets.Int(0).tag(sync=True)  # bump to focus the add-row input
 
     _css = """
     .rgw-root { font-family: var(--jp-ui-font-family, sans-serif); font-size: 14px; }
-    .rgw-title { font-size: 0.85em; color: #888; font-weight: bold; padding: 1px 2px; }
-    table.rgw { border-collapse: collapse; margin: 2px 0; }
+    .rgw-title { font-size: 0.95em; color: #888; font-weight: bold; padding: 1px 2px; }
+    table.rgw { border-collapse: collapse; margin: 2px 0; table-layout: fixed; }
     table.rgw th { text-align: left; font-weight: normal; color: #555;
-                   padding: 2px 8px 2px 4px; border-bottom: 1px solid #ccc; }
+                   padding: 2px 8px 2px 4px; border-bottom: 1px solid #ccc;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     table.rgw td { padding: 2px 8px 2px 4px; border-bottom: 1px solid #eee;
-                   white-space: nowrap; }
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     tr.rgw-header td { font-weight: bold; border-bottom: 2px solid #bbb; }
     tr.rgw-header td.rgw-item { font-style: italic; font-weight: normal; color: #555; }
-    .rgw-btns { white-space: nowrap; }
+    .rgw-btns { white-space: nowrap; overflow: visible; }
     .rgw button { font-size: 14px; padding: 1px 8px; margin-right: 3px;
                   border: 1px solid #bbb; border-radius: 3px; background: #f5f5f5;
                   cursor: pointer; }
@@ -61,9 +64,10 @@ class RecipeGridWidget(anywidget.AnyWidget):
     .rgw button.rgw-below-open { background: #f0ad4e; border-color: #d99b3c;
                                  color: #fff; }
     .rgw button.rgw-below-open:hover { background: #e39b35; }
-    .rgw select { font-size: 14px; padding: 1px 3px; }
+    .rgw select { font-size: 14px; padding: 1px 3px; max-width: 100%; }
     .rgw input { font-size: 14px; padding: 1px 4px; border: 1px solid #ccc;
-                 border-radius: 2px; width: 110px; box-sizing: border-box; }
+                 border-radius: 2px; width: 100%; min-width: 40px;
+                 box-sizing: border-box; }
     .rgw input.rgw-invalid { border-color: red; outline-color: red; }
     tr.rgw-row:hover td { background: #fafafa; }
     """
@@ -80,20 +84,27 @@ class RecipeGridWidget(anywidget.AnyWidget):
       let focusPending = false;
 
       const draw = () => {
-        const cols  = model.get("columns")   || [];
-        const rows  = model.get("rows")      || [];
-        const flags = model.get("row_flags") || [];
-        const mode  = model.get("mode");
-        const modes = model.get("modes")     || [];
-        const title = model.get("title")     || "";
-        const opts  = model.get("ingredients") || [];
-        const iidx  = cols.indexOf("item");
+        const cols   = model.get("columns")    || [];
+        const rows   = model.get("rows")       || [];
+        const flags  = model.get("row_flags")  || [];
+        const mode   = model.get("mode");
+        const modes  = model.get("modes")      || [];
+        const title  = model.get("title")      || "";
+        const opts   = model.get("ingredients")|| [];
+        const widths = model.get("col_widths") || {};
+        const iidx   = cols.indexOf("item");
+
+        // Fallback width mirrors update_column_width's own default
+        // (5 + 8*len) for any column it hasn't sized yet.
+        const widthFor = (c) => Math.max(widths[c] || (5 + 8 * String(c).length), 40);
 
         let html = title ? `<div class="rgw-title">${esc(title)}</div>` : "";
         html += `<datalist id="${dlid}">` +
           opts.map((o) => `<option value="${esc(o)}">`).join("") +
           `</datalist>`;
-        html += `<table class="rgw"><thead><tr><th></th>`;
+        html += `<table class="rgw"><colgroup><col style="width:64px">`;
+        for (const c of cols) html += `<col style="width:${widthFor(c)}px">`;
+        html += `</colgroup><thead><tr><th></th>`;
         for (const c of cols) html += `<th>${esc(c)}</th>`;
         html += `</tr></thead><tbody>`;
 
@@ -184,7 +195,7 @@ class RecipeGridWidget(anywidget.AnyWidget):
       };
 
       for (const t of ["columns", "rows", "row_flags", "mode",
-                       "modes", "title", "ingredients"])
+                       "modes", "title", "ingredients", "col_widths"])
         model.on(`change:${t}`, scheduleDraw);
 
       model.on("change:focus_seq", () => { focusPending = true; scheduleDraw(); });

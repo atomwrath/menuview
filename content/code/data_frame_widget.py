@@ -104,7 +104,6 @@ class DataFrameWidget:
         # One-model HTML grid used for recipe View mode. Set use_fast_view to
         # False to force the classic ipywidgets grid everywhere.
         self.use_fast_view   = RecipeGridWidget is not None
-        # self.use_fast_view   = False
         self._fast_grid      = None    # RecipeGridWidget instance (created lazily)
         self._fast_box       = None    # persistent VBox: [grid, child_output]
         self._fast_displayed = False   # True while _fast_box is what's on screen
@@ -426,12 +425,14 @@ class DataFrameWidget:
             with self.output:
                 self.output.clear_output(wait=True)
                 print(f'Could not flatten "{item}": {exc}')
+            self._fast_displayed = False   # output was cleared out from under the fast box
             return
 
         if flat_df is None or flat_df.empty:
             with self.output:
                 self.output.clear_output(wait=True)
                 print(f'No base ingredients found for "{item}".')
+            self._fast_displayed = False   # output was cleared out from under the fast box
             return
 
         flat_df = flat_df.copy()
@@ -441,7 +442,7 @@ class DataFrameWidget:
                 try:
                     pq = parse_quant(str(q))
                     if pq is not None and hasattr(pq, 'm') and pq.m > 0:
-                        return f"{(pq * scale)}"
+                        return f"{(pq * scale):~.2f}"
                 except Exception:
                     pass
                 return q
@@ -604,6 +605,12 @@ class DataFrameWidget:
         n_rows = len(self.df)
         conv_errors = getattr(self.cc, 'conversion_errors', set())
 
+        # Same per-column pixel widths the classic grid uses (getlayout /
+        # grid_template_columns). Recomputed here so it's correct regardless
+        # of which caller populated self.df last (setdf, _render_flattened,
+        # or the Edit-mode blank-row splice just above).
+        self.update_column_width()
+
         rows, flags = [], []
         for i in range(n_rows):
             row = self.df.iloc[i]
@@ -669,11 +676,13 @@ class DataFrameWidget:
         g = self._fast_grid
         opts = sorted(self.all_ingredients)
         with g.hold_trait_notifications():   # one message batch, one repaint
-            g.columns   = cols
-            g.rows      = rows
-            g.row_flags = flags
-            g.title     = self.last_lookup
-            g.mode      = self.widget_mode
+            g.columns    = cols
+            g.rows       = rows
+            g.row_flags  = flags
+            g.title      = self.last_lookup
+            g.mode       = self.widget_mode
+            # g.col_widths = dict(self.column_width)
+            g.col_widths = {c: max(40, int(w * 0.8)) for c, w in self.column_width.items()}
             if opts != self._fast_ingredient_opts:   # ship datalist only on change
                 g.ingredients = opts
                 self._fast_ingredient_opts = opts
@@ -743,9 +752,12 @@ class DataFrameWidget:
             self.set_widget_mode(content['value'])
     
     def update_display(self):
-        # Fast path: recipe View AND Edit modes render as one anywidget model.
+        # Fast path: recipe View, Edit, and Flatten modes all render as one
+        # anywidget model. (_render_flattened builds self.df/df_type exactly
+        # like a normal recipe display before calling this, so no special
+        # casing is needed here beyond including 'Flatten' in the mode set.)
         if (self.use_fast_view and RecipeGridWidget is not None
-                and self.widget_mode in ('View', 'Edit') and self.df_type == 'recipe'):
+                and self.widget_mode in ('View', 'Edit', 'Flatten') and self.df_type == 'recipe'):
             self._update_display_fast()
             return
         self._fast_displayed = False   # leaving fast view; output gets rebuilt below
