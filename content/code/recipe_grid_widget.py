@@ -8,7 +8,7 @@ v2 adds Edit mode on top of the v1 View-mode grid:
     what the ipywidgets Combobox couldn't do)
   - per-cell invalid feedback (red border) driven from Python
   - "view below" button highlights while its child is open (▴ + accent)
-  - slightly larger base font (14px, was 13px)
+  - slightly larger base font (16px, was 13px)
   - focus handoff to the blank add-ingredient row after commits
 
 Cell model
@@ -45,31 +45,44 @@ class RecipeGridWidget(anywidget.AnyWidget):
     focus_seq   = traitlets.Int(0).tag(sync=True)  # bump to focus the add-row input
 
     _css = """
-    .rgw-root { font-family: var(--jp-ui-font-family, sans-serif); font-size: 14px; }
-    .rgw-title { font-size: 0.95em; color: #888; font-weight: bold; padding: 1px 2px; }
+    .rgw-root { font-family: var(--jp-ui-font-family, sans-serif);
+                font-size: var(--rgw-font-size, 18px);   /* <- change this one value */
+                color: var(--jp-ui-font-color1, #333); }
+    .rgw-title { font-size: 0.95em; color: var(--jp-ui-font-color2, #888); font-weight: bold;
+                padding: 1px 2px; }
     table.rgw { border-collapse: collapse; margin: 2px 0; table-layout: fixed; }
-    table.rgw th { text-align: left; font-weight: normal; color: #555;
-                   padding: 2px 8px 2px 4px; border-bottom: 1px solid #ccc;
-                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    table.rgw td { padding: 2px 8px 2px 4px; border-bottom: 1px solid #eee;
-                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    tr.rgw-header td { font-weight: bold; border-bottom: 2px solid #bbb; }
-    tr.rgw-header td.rgw-item { font-style: italic; font-weight: normal; color: #555; }
+    table.rgw th { text-align: left; font-weight: normal; color: var(--jp-ui-font-color2, #555);
+                  padding: 2px 8px 2px 4px; border-bottom: 1px solid var(--jp-border-color1, #ccc);
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    table.rgw td { padding: 2px 8px 2px 4px; border-bottom: 1px solid var(--jp-border-color2, #eee);
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                  color: var(--jp-ui-font-color1, inherit); }
+    tr.rgw-header td { font-weight: bold; border-bottom: 2px solid var(--jp-border-color0, #bbb); }
+    tr.rgw-header td.rgw-item { font-style: italic; font-weight: normal;
+                                color: var(--jp-ui-font-color2, #555); }
     .rgw-btns { white-space: nowrap; overflow: visible; }
-    .rgw button { font-size: 14px; padding: 1px 8px; margin-right: 3px;
-                  border: 1px solid #bbb; border-radius: 3px; background: #f5f5f5;
+    .rgw button { font-size: 0.95em; padding: 1px 8px; margin-right: 3px;
+                  border: 1px solid var(--jp-border-color2, #bbb);
+                  border-radius: 3px;
+                  background: var(--jp-layout-color2, #f5f5f5);
+                  color: var(--jp-ui-font-color1, #333);
                   cursor: pointer; }
-    .rgw button:hover:not(:disabled) { background: #e2e2e2; }
-    .rgw button:disabled { opacity: 0.35; cursor: default; }
-    .rgw button.rgw-below-open { background: #f0ad4e; border-color: #d99b3c;
-                                 color: #fff; }
-    .rgw button.rgw-below-open:hover { background: #e39b35; }
-    .rgw select { font-size: 14px; padding: 1px 3px; max-width: 100%; }
-    .rgw input { font-size: 14px; padding: 1px 4px; border: 1px solid #ccc;
-                 border-radius: 2px; width: 100%; min-width: 40px;
-                 box-sizing: border-box; }
-    .rgw input.rgw-invalid { border-color: red; outline-color: red; }
-    tr.rgw-row:hover td { background: #fafafa; }
+    .rgw button:hover:not(:disabled) { background: var(--jp-layout-color3, #e2e2e2); }
+    .rgw button:disabled { opacity: 0.45; cursor: default; }
+    .rgw button.rgw-below-open { background: var(--jp-warn-color1, #f0ad4e);
+                                border-color: var(--jp-warn-color0, #d99b3c);
+                                color: #fff; }
+    .rgw button.rgw-below-open:hover { background: var(--jp-warn-color0, #e39b35); }
+    .rgw select { font-size: 0.95em; padding: 1px 3px; max-width: 100%;
+                  background: var(--jp-layout-color1, #fff);
+                  color: var(--jp-ui-font-color1, #333);
+                  border: 1px solid var(--jp-border-color2, #bbb); }
+    .rgw input { font-size: 0.95em; padding: 1px 4px; border: 1px solid var(--jp-border-color2, #ccc);
+                border-radius: 2px; width: 100%; min-width: 40px;
+                box-sizing: border-box; }
+    .rgw input.rgw-invalid { border-color: var(--jp-error-color1, red);
+                            outline-color: var(--jp-error-color1, red); }
+    tr.rgw-row:hover td { background: var(--jp-layout-color2, #fafafa); }
     """
 
     _esm = """

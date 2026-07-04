@@ -682,7 +682,7 @@ class DataFrameWidget:
             g.title      = self.last_lookup
             g.mode       = self.widget_mode
             # g.col_widths = dict(self.column_width)
-            g.col_widths = {c: max(40, int(w * 0.8)) for c, w in self.column_width.items()}
+            g.col_widths = {c: max(40, int(w * 0.9)) for c, w in self.column_width.items()}
             if opts != self._fast_ingredient_opts:   # ship datalist only on change
                 g.ingredients = opts
                 self._fast_ingredient_opts = opts
