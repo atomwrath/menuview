@@ -39,6 +39,8 @@ ipympl>=0.8.2
 ipycanvas>=0.9.1
 # Python: ipyleaflet library for Jupyter notebooks (optional)
 ipyleaflet
+# Python: anywidget library for Jupyter notebooks (optional)
+anywidget>=0.9,<1
 
 # Python: plotting libraries (optional)
 plotly>=5,<6
