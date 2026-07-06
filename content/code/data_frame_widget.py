@@ -41,7 +41,7 @@ class _FastCellShim:
 class DataFrameWidget:
     ''' ipywidgets based interactive interface for pandas
     '''
-    
+    _clipboard = None   # {'op': 'copy'|'cut', 'recipe': str, 'rows': [dict, ...]}
     def __init__(self, df, width='80px', enabled_columns=None, hide_columns=None,
              cc=CostCalculator(), output=widgets.Output(), trigger=None,
              all_enabled_columns=None, widget_mode='Edit'):
@@ -87,6 +87,7 @@ class DataFrameWidget:
         
         self.add_ingredient_widget = None 
         self._last_deleted = None   # snapshot of the most recently deleted ingredient row, for reorder-restore
+        
         self.search_history = []
         self.scale_stack = []    # parallel to search_history; entry[i] = scale active at level i
         self.search_history = []  # Add this line for tracking history
@@ -108,6 +109,8 @@ class DataFrameWidget:
         self._fast_box       = None    # persistent VBox: [grid, child_output]
         self._fast_displayed = False   # True while _fast_box is what's on screen
         self._fast_ingredient_opts = None   # last options list sent to the fast grid
+        self._fast_last_recipe = None   # last recipe name shown in the fast grid,
+                                         # used to reset selected_rows on navigation
         
         # inline confirmation for deleting an ingredient's LAST guide entry when
         # that ingredient is used in one or more recipes
@@ -675,14 +678,17 @@ class DataFrameWidget:
 
         g = self._fast_grid
         opts = sorted(self.all_ingredients)
+        recipe_changed = (self._fast_last_recipe != self.last_lookup)
         with g.hold_trait_notifications():   # one message batch, one repaint
             g.columns    = cols
             g.rows       = rows
             g.row_flags  = flags
             g.title      = self.last_lookup
             g.mode       = self.widget_mode
-            # g.col_widths = dict(self.column_width)
-            g.col_widths = {c: max(40, int(w * 0.9)) for c, w in self.column_width.items()}
+            g.col_widths = {c: max(40, int(w * 0.7)) for c, w in self.column_width.items()}
+            if recipe_changed:
+                g.selected_rows = []
+                self._fast_last_recipe = self.last_lookup
             if opts != self._fast_ingredient_opts:   # ship datalist only on change
                 g.ingredients = opts
                 self._fast_ingredient_opts = opts
@@ -750,6 +756,178 @@ class DataFrameWidget:
 
         elif msg_type == 'mode':
             self.set_widget_mode(content['value'])
+            
+        elif msg_type == 'selection_action':
+            sel = list(self._fast_grid.selected_rows or [])
+            if len(sel) != 2:
+                return
+            lo, hi = sel
+            action = content.get('action')
+            if action == 'copy':
+                self._selection_copy_cut(lo, hi, cut=False)
+            elif action == 'cut':
+                self._selection_copy_cut(lo, hi, cut=True)
+            elif action == 'paste':
+                self._selection_paste(lo)
+            elif action == 'view_below':
+                self._selection_view_below(lo, hi)
+            elif action == 'encapsulate':
+                name = str(content.get('name', '')).strip()
+                qty  = str(content.get('quantity', '')).strip() or '1 ct'
+                if name:
+                    self._selection_encapsulate(lo, hi, name, qty)
+        
+            
+    # ── Selection actions (cut / copy / paste / view selected / encapsulate) ──
+
+    def _selected_ingredient_names(self, lo, hi):
+        '''Ingredient names for display-row range [lo, hi] inclusive, skipping
+        the header row (0) and any not-yet-committed blank row.'''
+        names = []
+        for i in range(lo, hi + 1):
+            if i == 0 or i >= len(self.df):
+                continue
+            name = str(self.df.iloc[i]['ingredient']).strip()
+            if name:
+                names.append(name)
+        return names
+
+    def _selection_copy_cut(self, lo, hi, cut):
+        recipename = self.df.iloc[0]['ingredient']
+        names = self._selected_ingredient_names(lo, hi)
+        if not names:
+            return
+
+        snapshot = []
+        for name in names:
+            r = self.cc.get_item_ingredient(recipename, name)
+            if r.empty:
+                continue
+            r = r.iloc[0]
+            snapshot.append({
+                'ingredient': name,
+                'quantity': r.get('quantity', ''),
+                'menu price': r.get('menu price', ''),
+                'note': r.get('note', ''),
+            })
+        if not snapshot:
+            return
+
+        DataFrameWidget._clipboard = {
+            'op': 'cut' if cut else 'copy',
+            'recipe': recipename,
+            'rows': snapshot,
+        }
+
+        if cut:
+            for name in names:
+                self.cc.removeIngredient(recipename, name)
+            self.cc.clear_cost(recipename)
+            self.cc.recipe_cost(recipename)
+
+        if self._fast_grid is not None:
+            self._fast_grid.selected_rows = []
+            self._fast_grid.has_clipboard = True
+
+        self.setdf(recipename)
+        self.update_display()
+
+    def _selection_paste(self, before_row_index):
+        clip = DataFrameWidget._clipboard
+        if not clip or not clip['rows']:
+            return
+
+        recipename = self.df.iloc[0]['ingredient']
+        anchor = None
+        if 0 < before_row_index < len(self.df):
+            anchor = str(self.df.iloc[before_row_index]['ingredient']).strip() or None
+
+        for r in clip['rows']:
+            name = r['ingredient']
+            # Pasting a cut/copied row back where an identically-named row
+            # already exists in THIS recipe would collide — skip it rather
+            # than silently overwrite or error.
+            if not self.cc.get_item_ingredient(recipename, name).empty:
+                print(f'[paste] "{name}" is already in this recipe — skipped')
+                continue
+            self.cc.insert_ingredient(recipename, name, r.get('quantity', ''), before=anchor)
+            if r.get('menu price', '') not in ('', None):
+                self.cc.set_item_ingredient(recipename, name, 'menu price', r['menu price'])
+            if r.get('note', '') not in ('', None):
+                self.cc.set_item_ingredient(recipename, name, 'note', r['note'])
+
+        # A cut clipboard is single-use; a copy clipboard can be pasted
+        # again (into this recipe or another).
+        if clip['op'] == 'cut':
+            DataFrameWidget._clipboard = None
+            if self._fast_grid is not None:
+                self._fast_grid.has_clipboard = False
+
+        self.cc.clear_cost(recipename)
+        self.cc.recipe_cost(recipename)
+        self.setdf(recipename)
+        self.update_display()
+
+    def _selection_view_below(self, lo, hi):
+        names = self._selected_ingredient_names(lo, hi)
+        if not names:
+            return
+        recipename = self.df.iloc[0]['ingredient']
+
+        rows = self.df.iloc[lo:hi + 1].copy()
+        rows = rows.loc[rows['ingredient'].astype(str).str.strip() != '']
+
+        total_cost = 0.0
+        if 'cost' in rows.columns:
+            try:
+                total_cost = rows['cost'].apply(lambda x: float(x) if pd.notna(x) and str(x) != '' else 0.0).sum()
+            except (TypeError, ValueError):
+                pass
+
+        header = {col: '' for col in rows.columns}
+        header.update({'item': 'recipe', 'ingredient': f'{recipename} (selection)',
+                       'quantity': '', 'cost': total_cost})
+        display_df = pd.concat([pd.DataFrame([header]), rows], ignore_index=True)
+        display_df['item'] = f'{recipename} (selection)'
+        display_df = display_df.reset_index(drop=True)
+
+        child = DataFrameWidget(
+            pd.DataFrame(), width=self.width, enabled_columns=[],
+            all_enabled_columns=list(self.all_enabled_columns),
+            hide_columns=(list(self.hide_columns) if isinstance(self.hide_columns, (list, set)) else self.hide_columns),
+            cc=self.cc, output=self.child_output, trigger=None, widget_mode='View',
+        )
+        child.equ_quant_unit = self.equ_quant_unit
+        child.equ_quant_precision = self.equ_quant_precision
+        child.cost_multipliers = list(self.cost_multipliers)
+        child.root_trigger = self.root_trigger if self.root_trigger is not None else self.trigger
+        child.parent_refresh = self._refresh_self
+
+        child.df = display_df
+        child.df_type = 'recipe'
+        child.last_lookup = header['ingredient']
+        child.update_column_width()
+
+        self.child_widget = child
+        self.child_ingredient = None   # transient — not tied to any real row's "view below"
+        with self.child_output:
+            self.child_output.clear_output()
+        child.update_display()
+
+    def _selection_encapsulate(self, lo, hi, new_name, batch_quantity='1 ct'):
+        recipename = self.df.iloc[0]['ingredient']
+        names = self._selected_ingredient_names(lo, hi)
+        if not names:
+            return
+        try:
+            self.cc.create_recipe_from_rows(recipename, names, new_name, batch_quantity=batch_quantity)
+        except ValueError as exc:
+            print(f'[encapsulate] {exc}')
+            return
+        if self._fast_grid is not None:
+            self._fast_grid.selected_rows = []
+        self.setdf(recipename)
+        self.update_display()
     
     def update_display(self):
         # Fast path: recipe View, Edit, and Flatten modes all render as one

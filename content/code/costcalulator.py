@@ -844,6 +844,78 @@ class CostCalculator:
         self.clear_cost(new_name)   # rebuilds maps, drops memo/leaf cache, zeroes affected costs
         return len(affected)
     
+    def create_recipe_from_rows(self, source_item, ingredient_names, new_name, batch_quantity='1 ct'):
+        ''' "Encapsulate": pull a contiguous set of ingredient rows out of
+            source_item and turn them into their own recipe (new_name),
+            leaving a single reference row behind in source_item's place.
+
+            The new recipe's own yield is `batch_quantity` (default '1 ct')
+            and the reference row left in source_item uses the same
+            quantity/unit — i.e. "use 1 batch of new_name here". This avoids
+            having to reconcile mixed units across the selected rows: the
+            new recipe's cost is just the sum of its children's costs at that
+            yield, and the parent references it at a matching count unit.
+            The yield can be edited afterward like any other recipe quantity.
+
+            Raises ValueError if new_name already exists, or any of
+            ingredient_names isn't actually a row of source_item.
+        '''
+        source_item = str(source_item).strip()
+        new_name = str(new_name).strip()
+        ingredient_names = [str(n).strip() for n in ingredient_names]
+
+        if not new_name:
+            raise ValueError('New recipe name cannot be blank')
+
+        def _exists(name):
+            return (not self.get_recipe_entry(name).empty
+                    or not self.costdf.loc[self.costdf['item'] == name].empty
+                    or not self.costdf.loc[self.costdf['ingredient'] == name].empty
+                    or not self.find_nick(name).empty)
+        if _exists(new_name):
+            raise ValueError(f'"{new_name}" already exists')
+
+        rows = self.item_list(source_item)
+        selected = rows.loc[rows['ingredient'].isin(ingredient_names)]
+        if len(selected) != len(ingredient_names):
+            raise ValueError('One or more selected rows were not found in the recipe')
+
+        # Remember what (if anything) follows the selected block, so the
+        # reference row left behind lands in exactly the same spot.
+        ordered_names = list(rows['ingredient'])
+        last_pos = ordered_names.index(ingredient_names[-1])
+        next_name = ordered_names[last_pos + 1] if last_pos + 1 < len(ordered_names) else None
+
+        for col in ('item', 'ingredient'):
+            if isinstance(self.costdf[col].dtype, pd.CategoricalDtype):
+                if new_name not in self.costdf[col].cat.categories:
+                    self.costdf[col] = self.costdf[col].cat.add_categories([new_name])
+
+        # New recipe's children: the selected rows, re-parented, costs reset
+        # so they get recomputed under their new parent.
+        children = selected.copy()
+        children['item'] = new_name
+        if 'cost' in children.columns:
+            children['cost'] = 0.0
+
+        # New recipe's own header row.
+        header = pd.DataFrame({col: [''] for col in self.costdf.columns})
+        header['item'] = 'recipe'
+        header['ingredient'] = new_name
+        header['quantity'] = batch_quantity
+        header['cost'] = 0.0
+
+        self.costdf = self.costdf.drop(selected.index)
+        self.costdf = pd.concat([self.costdf, header, children], ignore_index=True)
+
+        # Splice the single reference row back into source_item, in place —
+        # insert_ingredient already handles ordered positioning + clear_cost.
+        self.insert_ingredient(source_item, new_name, batch_quantity, before=next_name)
+
+        self.clear_cost(new_name)
+        self.recipe_cost(new_name)
+        self.recipe_cost(source_item)
+    
     def duplicate_recipe(self, old_name, new_name):
         ''' Create a copy of a recipe under a new name. The original recipe and
             every place that references it are left completely untouched — this
