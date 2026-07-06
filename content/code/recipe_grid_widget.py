@@ -329,13 +329,22 @@ class RecipeGridWidget(anywidget.AnyWidget):
         const hasClip = model.get("has_clipboard");
 
         const renderActions = () => {
-          menu.innerHTML = `
-            <button data-action="copy">Copy</button>
-            <button data-action="cut">Cut</button>
-            <button data-action="paste" ${hasClip ? "" : "disabled"}>Paste</button>
-            <button data-action="view_below">View selected below</button>
-            <button data-action="encapsulate">Encapsulate as recipe&hellip;</button>
-          `;
+          const mode = model.get("mode");
+          if (mode === "Edit") {
+            menu.innerHTML = `
+              <button data-action="copy">Copy</button>
+              <button data-action="cut">Cut</button>
+              <button data-action="paste" ${hasClip ? "" : "disabled"}>Paste</button>
+              <button data-action="view_below">View selected below</button>
+              <button data-action="encapsulate">Encapsulate as recipe&hellip;</button>
+            `;
+          } else {
+            // View / Flatten are read-only: no cut/paste/encapsulate
+            menu.innerHTML = `
+              <button data-action="copy">Copy</button>
+              <button data-action="view_below">View selected below</button>
+            `;
+          }
           menu.querySelectorAll("button[data-action]").forEach((b) =>
             b.addEventListener("click", (ev) => {
               ev.stopPropagation();

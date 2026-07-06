@@ -763,6 +763,11 @@ class DataFrameWidget:
                 return
             lo, hi = sel
             action = content.get('action')
+
+            read_only_actions = {'copy', 'view_below'}
+            if self.widget_mode != 'Edit' and action not in read_only_actions:
+                return   # View/Flatten: only Copy and View-selected-below are allowed
+
             if action == 'copy':
                 self._selection_copy_cut(lo, hi, cut=False)
             elif action == 'cut':
