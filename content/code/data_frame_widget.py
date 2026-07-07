@@ -38,10 +38,54 @@ class _FastCellShim:
         self.tag = None
 
 
+def _strip_trailing_zero(s):
+    '''"4.0" -> "4"; leaves "4.5", "0.333", etc. untouched.'''
+    if s.endswith('.0'):
+        return s[:-2]
+    return s
+
+
+def _format_quantity_full(magf, unit_str):
+    '''Full-precision magnitude, for Copy/Cut: Python's shortest round-trip
+    decimal repr (the exact digits needed to reconstruct the value — no
+    artificial rounding), with a trailing ".0" stripped for whole numbers.
+    Always plain decimal, never scientific notation — this is the value
+    that ends up on the clipboard and gets pasted elsewhere.
+    '''
+    if magf == 0:
+        return f"0 {unit_str}".strip()
+    return f"{_strip_trailing_zero(repr(float(magf)))} {unit_str}".strip()
+
+
+def _format_quantity_display(magf, unit_str):
+    '''Capped-precision magnitude, for on-screen display: up to 3 decimal
+    places (trailing zeros/point stripped, so whole numbers show as "4" and
+    "0.5" doesn't pad out to "0.500"), switching to scientific notation
+    (mantissa capped at 3dp the same way, e.g. "2.222e-3") once the
+    magnitude drops under 0.01.
+    '''
+    if magf == 0:
+        return f"0 {unit_str}".strip()
+    if abs(magf) < 0.01:
+        mantissa, exp = f"{magf:.3e}".split('e')
+        mantissa = mantissa.rstrip('0').rstrip('.') or '0'
+        sign, exp_digits = exp[0], exp[1:].lstrip('0') or '0'
+        s = f"{mantissa}e{sign}{exp_digits}"
+    else:
+        s = f"{magf:.3f}".rstrip('0').rstrip('.')
+        if s in ('', '-'):
+            s = '0'
+    return f"{s} {unit_str}".strip()
+
+
 class DataFrameWidget:
     ''' ipywidgets based interactive interface for pandas
     '''
     _clipboard = None   # {'op': 'copy'|'cut', 'recipe': str, 'rows': [dict, ...]}
+    _open_grids = []    # every DataFrameWidget currently showing a fast grid (this widget plus
+                         # any nested "view below" parents/children) — used to keep only one
+                         # selection "live" across all of them, and to keep every open grid's
+                         # has_clipboard in sync with the single shared clipboard above.
     def __init__(self, df, width='80px', enabled_columns=None, hide_columns=None,
              cc=CostCalculator(), output=widgets.Output(), trigger=None,
              all_enabled_columns=None, widget_mode='Edit'):
@@ -70,6 +114,11 @@ class DataFrameWidget:
         self.equ_quant_precision = None
         self.equ_quant_unit = None              # target unit for "equ quant" column
         self.scale_factor = None                # current display scale ratio (float|None)
+        self._scaled_quantity_full = {}         # row idx -> full-precision scaled quantity
+                                                 # string, set by _apply_scaling when scaling
+                                                 # is active; the displayed 'quantity' cell is
+                                                 # rounded for readability, but Copy/Cut read
+                                                 # from here so nothing is lost in the clipboard
         self._pending_lookup_quantity = None    # set by on_lookup_click before trigger fires
         self._navigating_back = False           # True while on_back_click is executing;
                                                 # tells update_search not to clear scale
@@ -111,6 +160,9 @@ class DataFrameWidget:
         self._fast_ingredient_opts = None   # last options list sent to the fast grid
         self._fast_last_recipe = None   # last recipe name shown in the fast grid,
                                          # used to reset selected_rows on navigation
+        self._selection_controls = None   # optional extra ipywidgets widget shown above the
+                                           # grid (used by the "view selected below" panel for
+                                           # its Create/Replace buttons); set before first display
         
         # inline confirmation for deleting an ingredient's LAST guide entry when
         # that ingredient is used in one or more recipes
@@ -165,6 +217,7 @@ class DataFrameWidget:
             equ_quant_precision=self.equ_quant_precision
         ).reset_index(drop=True).copy()
         self.df = mydf
+        self._scaled_quantity_full = {}
         self.findtype()
         if (self.df_type == 'recipe'):
             colorder = ['item', 'ingredient', 'quantity', 'equ quant', 'cost']
@@ -231,12 +284,17 @@ class DataFrameWidget:
                 
     def _apply_scaling(self, mydf, scale):
         '''Scale quantities and costs in a display copy of a recipe DataFrame.
- 
+
         This never writes back to self.cc.costdf – it only modifies the copy
         that will be displayed to the user in view mode.
- 
+
         Columns scaled:
-          - quantity    : pint-aware string  ("1 cup"     → "0.5000 cup")
+          - quantity    : displayed at up to 3 decimal places (trailing
+                          zeros/point stripped), switching to scientific
+                          notation under 0.01 — but the full, unrounded
+                          value is separately cached in
+                          self._scaled_quantity_full for Copy/Cut to use,
+                          so nothing is lost off the clipboard.
           - equ quant   : pint-aware string  ("236.5 g"   → "118.2 g"), skips n/a
           - cost        : float
           - cost N.Nx   : float  (any "cost N.Nx" column added by add_costx)
@@ -251,7 +309,11 @@ class DataFrameWidget:
             try:
                 q = parse_quant(q_str)
                 if q is not None and hasattr(q, 'm') and q.m > 0:
-                    mydf.at[idx, 'quantity'] = f"{(q * scale):~.2f}"
+                    scaled = q * scale
+                    unit_str = f"{scaled.units:~}"
+                    magf = float(scaled.magnitude)
+                    self._scaled_quantity_full[idx] = _format_quantity_full(magf, unit_str)
+                    mydf.at[idx, 'quantity'] = _format_quantity_display(magf, unit_str)
             except Exception:
                 pass
 
@@ -414,7 +476,9 @@ class DataFrameWidget:
         scale = self.scale_factor
         if scale is not None:
             try:
-                quant_str = f"{(parse_quant(recipe_yield_str) * scale):~.2f}"
+                scaled_yield = parse_quant(recipe_yield_str) * scale
+                quant_str = _format_quantity_display(
+                    float(scaled_yield.magnitude), f"{scaled_yield.units:~}")
             except Exception:
                 quant_str = recipe_yield_str
         else:
@@ -440,16 +504,25 @@ class DataFrameWidget:
 
         flat_df = flat_df.copy()
 
-        if scale is not None and abs(scale - 1.0) > 1e-9:
-            def _scale_qty(q):
+        do_scale = scale is not None and abs(scale - 1.0) > 1e-9
+        weight_dim = parse_quant('1 kg').dimensionality
+        volume_dim = parse_quant('1 liter').dimensionality
+
+        # Stage 1: scale, kept at full precision (not the final display
+        # string yet) — the equ-quant conversion below, and the
+        # standard-units conversion after it, both need an accurate value
+        # to work from, not something already rounded to 2dp.
+        if do_scale:
+            def _scale_full(row):
                 try:
-                    pq = parse_quant(str(q))
+                    pq = parse_quant(str(row['quantity']))
                     if pq is not None and hasattr(pq, 'm') and pq.m > 0:
-                        return f"{(pq * scale):~.2f}"
+                        scaled = pq * scale
+                        return _format_quantity_full(float(scaled.magnitude), f"{scaled.units:~}")
                 except Exception:
                     pass
-                return q
-            flat_df['quantity'] = flat_df['quantity'].apply(_scale_qty)
+                return row['quantity']
+            flat_df['quantity'] = flat_df.apply(_scale_full, axis=1)
             if 'cost' in flat_df.columns:
                 flat_df['cost'] = flat_df['cost'].apply(
                     lambda c: float(c) * scale
@@ -463,9 +536,43 @@ class DataFrameWidget:
                 lambda row: self.cc.add_equ_quant(row, equ_unit, precision=equ_prec), axis=1
             )
 
-        flat_df['quantity'] = flat_df.apply(
-            lambda row: self._normalize_to_standard_units(row['ingredient'], str(row['quantity'])), axis=1
-        )
+        # Stage 2: normalize to standard units (g/ml) and do the *final*
+        # display/full-precision formatting in one step. This used to be a
+        # separate pass that reparsed an already-.2f-rounded string and
+        # reformatted with its own hardcoded ".2f" — which is what was
+        # silently throwing away the display helpers' precision and
+        # scientific notation the moment it ran.
+        full_precision_by_name = {}
+
+        def _finalize_quantity(row):
+            ingredient = row['ingredient']
+            try:
+                q = parse_quant(str(row['quantity']))
+                if q is None:
+                    return row['quantity']
+                converted = None
+                if q.dimensionality == weight_dim:
+                    converted = q.to('g')
+                else:
+                    result = self.cc.do_conversion(ingredient, q, '1 g')
+                    if result is not None:
+                        converted = result.to('g')
+                    elif q.dimensionality == volume_dim:
+                        converted = q.to('ml')
+                    else:
+                        result = self.cc.do_conversion(ingredient, q, '1 ml')
+                        if result is not None:
+                            converted = result.to('ml')
+                final_q = converted if converted is not None else q
+                unit_str = f"{final_q.units:~}"
+                magf = float(final_q.magnitude)
+                full_precision_by_name[str(ingredient).strip()] = _format_quantity_full(magf, unit_str)
+                return _format_quantity_display(magf, unit_str)
+            except Exception:
+                return row['quantity']
+
+        flat_df['quantity'] = flat_df.apply(_finalize_quantity, axis=1)
+
         flat_df = self._sort_flattened(flat_df)
 
         total_cost = 0.0
@@ -508,6 +615,12 @@ class DataFrameWidget:
         self.df              = display_df
         self.df_type         = 'recipe'
         self.enabled_columns = []
+        self._scaled_quantity_full = {}
+        if full_precision_by_name:
+            for i, ing in display_df['ingredient'].items():
+                key = str(ing).strip()
+                if key in full_precision_by_name:
+                    self._scaled_quantity_full[i] = full_precision_by_name[key]
         self.update_column_width()
         self.update_display()
 
@@ -533,27 +646,6 @@ class DataFrameWidget:
         df = df.sort_values('_sort_key').drop(columns=['_sort_key'])
         return df.reset_index(drop=True)
 
-    def _normalize_to_standard_units(self, ingredient, qty_str):
-        try:
-            q = parse_quant(qty_str)
-            if q is None:
-                return qty_str
-            weight_dim = parse_quant('1 kg').dimensionality
-            volume_dim = parse_quant('1 liter').dimensionality
-            if q.dimensionality == weight_dim:
-                return f'{q.to("g").magnitude:.2f} g'
-            result = self.cc.do_conversion(ingredient, qty_str, '1 g')
-            if result is not None:
-                return f'{result.to("g").magnitude:.2f} g'
-            if q.dimensionality == volume_dim:
-                return f'{q.to("ml").magnitude:.2f} ml'
-            result = self.cc.do_conversion(ingredient, qty_str, '1 ml')
-            if result is not None:
-                return f'{result.to("ml").magnitude:.2f} ml'
-        except Exception:
-            pass
-        return qty_str
-    
     def _make_subgrid(self, items_slice):
                 return widgets.GridBox(
                     items_slice,
@@ -669,8 +761,17 @@ class DataFrameWidget:
         if self._fast_grid is None:
             self._fast_grid = RecipeGridWidget()
             self._fast_grid.on_msg(self._on_fast_grid_msg)
+            self._fast_grid.has_clipboard = (DataFrameWidget._clipboard is not None)
+            self._fast_grid.observe(self._on_selection_changed, names='selected_rows')
+            if self not in DataFrameWidget._open_grids:
+                DataFrameWidget._open_grids.append(self)
+
+            box_children = []
+            if self._selection_controls is not None:
+                box_children.append(self._selection_controls)
+            box_children += [self._fast_grid, self.child_output]
             self._fast_box = widgets.VBox(
-                [self._fast_grid, self.child_output],
+                box_children,
                 layout=widgets.Layout(border='1px solid #ccc',
                                       border_radius='3px',
                                       padding='2px 4px', margin='2px 0'),
@@ -685,7 +786,19 @@ class DataFrameWidget:
             g.row_flags  = flags
             g.title      = self.last_lookup
             g.mode       = self.widget_mode
-            g.col_widths = {c: max(40, int(w * 0.7)) for c, w in self.column_width.items()}
+            # An <input>'s own padding + border (see .rgw input in _css)
+            # eats into its text area in a way the label-based width
+            # estimate above never accounted for — invisible on a short
+            # value, but compounding into a few clipped characters on a
+            # long one (ingredient names being the usual worst case). Only
+            # columns that actually render as an input in this mode need
+            # the extra room; label-only cells (all of View mode, and
+            # non-enabled columns in Edit mode) are already sized correctly.
+            INPUT_CHROME_PX = 32
+            g.col_widths = {
+                c: max(40, int(w * 0.72) + (INPUT_CHROME_PX if edit_mode and c in self.enabled_columns else 0))
+                for c, w in self.column_width.items()
+            }
             if recipe_changed:
                 g.selected_rows = []
                 self._fast_last_recipe = self.last_lookup
@@ -758,10 +871,9 @@ class DataFrameWidget:
             self.set_widget_mode(content['value'])
             
         elif msg_type == 'selection_action':
-            sel = list(self._fast_grid.selected_rows or [])
-            if len(sel) != 2:
+            sel = sorted(set(self._fast_grid.selected_rows or []))
+            if not sel:
                 return
-            lo, hi = sel
             action = content.get('action')
 
             read_only_actions = {'copy', 'view_below'}
@@ -769,27 +881,35 @@ class DataFrameWidget:
                 return   # View/Flatten: only Copy and View-selected-below are allowed
 
             if action == 'copy':
-                self._selection_copy_cut(lo, hi, cut=False)
+                self._selection_copy_cut(sel, cut=False)
             elif action == 'cut':
-                self._selection_copy_cut(lo, hi, cut=True)
+                self._selection_copy_cut(sel, cut=True)
             elif action == 'paste':
-                self._selection_paste(lo)
+                self._selection_paste(sel[0])   # paste goes in above the first selected row
             elif action == 'view_below':
-                self._selection_view_below(lo, hi)
-            elif action == 'encapsulate':
-                name = str(content.get('name', '')).strip()
-                qty  = str(content.get('quantity', '')).strip() or '1 ct'
-                if name:
-                    self._selection_encapsulate(lo, hi, name, qty)
+                self._selection_view_below(sel)
         
             
-    # ── Selection actions (cut / copy / paste / view selected / encapsulate) ──
+    # ── Selection actions (cut / copy / paste / view selected) ──
 
-    def _selected_ingredient_names(self, lo, hi):
-        '''Ingredient names for display-row range [lo, hi] inclusive, skipping
-        the header row (0) and any not-yet-committed blank row.'''
+    def _on_selection_changed(self, change):
+        '''Fires whenever THIS widget's grid selection changes (from a tap/
+        drag in the browser, or from Python clearing it after an action).
+
+        Keeps only one recipe's selection "live" at a time across every
+        currently open grid (this widget plus any nested "view below"
+        parents/children) — selecting here clears everyone else's.
+        '''
+        if change['new']:
+            for w in DataFrameWidget._open_grids:
+                if w is not self and w._fast_grid is not None and w._fast_grid.selected_rows:
+                    w._fast_grid.selected_rows = []
+
+    def _selected_ingredient_names(self, rows):
+        '''Ingredient names for the given (possibly non-contiguous) display-row
+        indices, skipping the header row (0) and any not-yet-committed blank row.'''
         names = []
-        for i in range(lo, hi + 1):
+        for i in rows:
             if i == 0 or i >= len(self.df):
                 continue
             name = str(self.df.iloc[i]['ingredient']).strip()
@@ -797,21 +917,35 @@ class DataFrameWidget:
                 names.append(name)
         return names
 
-    def _selection_copy_cut(self, lo, hi, cut):
+    def _selection_copy_cut(self, rows, cut):
         recipename = self.df.iloc[0]['ingredient']
-        names = self._selected_ingredient_names(lo, hi)
+        names = self._selected_ingredient_names(rows)
         if not names:
             return
 
+        # Snapshot from self.df — what's actually on screen — rather than
+        # cc.costdf, for the quantity only: in View mode with an active
+        # scale_factor, self.df's quantity is scaled to the recipe's current
+        # yield (see _apply_scaling), and Copy/Cut should carry that scaled
+        # amount, not the raw, unscaled costdf value. The *displayed* string
+        # is rounded for readability though, so prefer the full-precision
+        # value _apply_scaling cached on the side when there is one. Menu
+        # price/note still come from cc.costdf since self.df may not even
+        # include those columns (hide_columns commonly hides both).
         snapshot = []
-        for name in names:
-            r = self.cc.get_item_ingredient(recipename, name)
-            if r.empty:
+        for i in rows:
+            if i == 0 or i >= len(self.df):
                 continue
-            r = r.iloc[0]
+            disp_row = self.df.iloc[i]
+            name = str(disp_row.get('ingredient', '')).strip()
+            if not name:
+                continue
+            r = self.cc.get_item_ingredient(recipename, name)
+            r = r.iloc[0] if not r.empty else {}
+            quantity = self._scaled_quantity_full.get(i, disp_row.get('quantity', ''))
             snapshot.append({
                 'ingredient': name,
-                'quantity': r.get('quantity', ''),
+                'quantity': quantity,
                 'menu price': r.get('menu price', ''),
                 'note': r.get('note', ''),
             })
@@ -832,7 +966,9 @@ class DataFrameWidget:
 
         if self._fast_grid is not None:
             self._fast_grid.selected_rows = []
-            self._fast_grid.has_clipboard = True
+        for w in DataFrameWidget._open_grids:
+            if w._fast_grid is not None:
+                w._fast_grid.has_clipboard = True
 
         self.setdf(recipename)
         self.update_display()
@@ -865,34 +1001,36 @@ class DataFrameWidget:
         # again (into this recipe or another).
         if clip['op'] == 'cut':
             DataFrameWidget._clipboard = None
-            if self._fast_grid is not None:
-                self._fast_grid.has_clipboard = False
+            for w in DataFrameWidget._open_grids:
+                if w._fast_grid is not None:
+                    w._fast_grid.has_clipboard = False
 
         self.cc.clear_cost(recipename)
         self.cc.recipe_cost(recipename)
         self.setdf(recipename)
         self.update_display()
 
-    def _selection_view_below(self, lo, hi):
-        names = self._selected_ingredient_names(lo, hi)
+    def _selection_view_below(self, rows):
+        names = self._selected_ingredient_names(rows)
         if not names:
             return
         recipename = self.df.iloc[0]['ingredient']
+        self.close_child()   # replace whatever was previously shown below, if anything
 
-        rows = self.df.iloc[lo:hi + 1].copy()
-        rows = rows.loc[rows['ingredient'].astype(str).str.strip() != '']
+        selected_rows = self.df.iloc[rows].copy()
+        selected_rows = selected_rows.loc[selected_rows['ingredient'].astype(str).str.strip() != '']
 
         total_cost = 0.0
-        if 'cost' in rows.columns:
+        if 'cost' in selected_rows.columns:
             try:
-                total_cost = rows['cost'].apply(lambda x: float(x) if pd.notna(x) and str(x) != '' else 0.0).sum()
+                total_cost = selected_rows['cost'].apply(lambda x: float(x) if pd.notna(x) and str(x) != '' else 0.0).sum()
             except (TypeError, ValueError):
                 pass
 
-        header = {col: '' for col in rows.columns}
+        header = {col: '' for col in selected_rows.columns}
         header.update({'item': 'recipe', 'ingredient': f'{recipename} (selection)',
                        'quantity': '', 'cost': total_cost})
-        display_df = pd.concat([pd.DataFrame([header]), rows], ignore_index=True)
+        display_df = pd.concat([pd.DataFrame([header]), selected_rows], ignore_index=True)
         display_df['item'] = f'{recipename} (selection)'
         display_df = display_df.reset_index(drop=True)
 
@@ -907,6 +1045,7 @@ class DataFrameWidget:
         child.cost_multipliers = list(self.cost_multipliers)
         child.root_trigger = self.root_trigger if self.root_trigger is not None else self.trigger
         child.parent_refresh = self._refresh_self
+        child.guide_changed_callback = self.guide_changed_callback
 
         child.df = display_df
         child.df_type = 'recipe'
@@ -915,24 +1054,71 @@ class DataFrameWidget:
 
         self.child_widget = child
         self.child_ingredient = None   # transient — not tied to any real row's "view below"
+
+        # ── "Create as new recipe" / "Replace selection in original recipe" ──
+        # Replaces the old JS-side "Encapsulate" menu item. Both mutate
+        # recipename, so they're only offered when the selection came from
+        # an Edit-mode grid — View/Flatten selections are read-only, same
+        # as the Cut/Paste restriction on the popup menu itself.
+        if self.widget_mode == 'Edit':
+            name_box    = widgets.Text(placeholder='new recipe name', layout=widgets.Layout(width='200px'))
+            qty_box     = widgets.Text(value='1 ct', layout=widgets.Layout(width='80px'))
+            status_lbl  = widgets.Label(value='')
+            create_btn  = widgets.Button(description='Create as new recipe', button_style='info')
+            replace_btn = widgets.Button(description='Replace selection in original recipe', button_style='warning')
+
+            def _read_inputs():
+                new_name = name_box.value.strip()
+                qty = qty_box.value.strip() or '1 ct'
+                if not new_name:
+                    status_lbl.value = 'Enter a name for the new recipe first.'
+                    return None, None
+                return new_name, qty
+
+            def _on_create(b):
+                new_name, qty = _read_inputs()
+                if new_name is None:
+                    return
+                try:
+                    self.cc.create_recipe_from_rows(recipename, names, new_name,
+                                                     batch_quantity=qty, replace_in_source=False)
+                except ValueError as exc:
+                    status_lbl.value = f'[create] {exc}'
+                    return
+                if self.guide_changed_callback is not None:
+                    self.guide_changed_callback()
+                status_lbl.value = f'Created "{new_name}" — original recipe unchanged.'
+                name_box.value = ''
+
+            def _on_replace(b):
+                new_name, qty = _read_inputs()
+                if new_name is None:
+                    return
+                try:
+                    self.cc.create_recipe_from_rows(recipename, names, new_name,
+                                                     batch_quantity=qty, replace_in_source=True)
+                except ValueError as exc:
+                    status_lbl.value = f'[replace] {exc}'
+                    return
+                if self.guide_changed_callback is not None:
+                    self.guide_changed_callback()
+                if self._fast_grid is not None:
+                    self._fast_grid.selected_rows = []
+                self.close_child()   # this panel's rows were just replaced in the source recipe
+                self.setdf(recipename)
+                self.update_display()
+
+            create_btn.on_click(_on_create)
+            replace_btn.on_click(_on_replace)
+
+            child._selection_controls = widgets.VBox([
+                widgets.HBox([name_box, qty_box, create_btn, replace_btn]),
+                status_lbl,
+            ], layout=widgets.Layout(border='1px solid #ccc', padding='4px', margin='0 0 4px 0'))
+
         with self.child_output:
             self.child_output.clear_output()
         child.update_display()
-
-    def _selection_encapsulate(self, lo, hi, new_name, batch_quantity='1 ct'):
-        recipename = self.df.iloc[0]['ingredient']
-        names = self._selected_ingredient_names(lo, hi)
-        if not names:
-            return
-        try:
-            self.cc.create_recipe_from_rows(recipename, names, new_name, batch_quantity=batch_quantity)
-        except ValueError as exc:
-            print(f'[encapsulate] {exc}')
-            return
-        if self._fast_grid is not None:
-            self._fast_grid.selected_rows = []
-        self.setdf(recipename)
-        self.update_display()
     
     def update_display(self):
         # Fast path: recipe View, Edit, and Flatten modes all render as one
@@ -2023,6 +2209,8 @@ class DataFrameWidget:
         '''Discard any currently-open nested ("view below") child, if any.'''
         if self.child_widget is None:
             return
+        if self.child_widget in DataFrameWidget._open_grids:
+            DataFrameWidget._open_grids.remove(self.child_widget)
         self.child_widget = None
         self.child_ingredient = None
         with self.child_output:
@@ -2033,16 +2221,15 @@ class DataFrameWidget:
         ingredient_name = row['ingredient']
 
         if self.child_widget is not None and self.child_ingredient == ingredient_name:
-            self.child_widget = None
-            self.child_ingredient = None
-            with self.child_output:
-                self.child_output.clear_output()
+            self.close_child()
             self.setdf(self.last_lookup)
             self.update_display()
             return
 
         is_subrecipe  = not self.cc.get_recipe_entry(ingredient_name).empty
         default_mode  = 'View' if is_subrecipe else self.widget_mode   # ← the only behavior change
+
+        self.close_child()   # switching rows — replace whatever was previously shown below
 
         child = DataFrameWidget(
             pd.DataFrame(),
@@ -2168,4 +2355,3 @@ class DisplayDataFrameWidget(DataFrameWidget):
                 self.trigger(row['nickname'])
 
         button.disabled = True
-        

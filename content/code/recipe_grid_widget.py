@@ -18,20 +18,23 @@ Messages (browser -> kernel)
     {type:"scale", value} / {type:"mode", value}
     {type:"selection_action", action, ...}
         action: "copy" | "cut" | "paste" | "view_below"
-              | "encapsulate" (+ name, quantity)
 
 Messages (kernel -> browser)
     {type:"cell_invalid", row, col}   red-border a cell
     {type:"scale_invalid"}            red-border the scale input
 
 Selection
-    Dragging (or tapping) on the item-column "handle" cell of any non-header
-    row selects a contiguous row range (selected_rows = [lo, hi], inclusive).
-    Uses Pointer Events so it works with touch (iPad) as well as mouse — and
-    tracks the row under the finger via elementFromPoint, since touchmove
-    doesn't retarget the way mousemove does. The first selected row's item
+    Tapping the item-column "handle" cell of any non-header row toggles that
+    row in/out of the selection; dragging across handle cells adds that
+    whole range on top of whatever's already selected (selected_rows is an
+    arbitrary, possibly non-contiguous, list of row indices — not a [lo,hi]
+    range). Tapping blank space clears the selection entirely. Uses Pointer
+    Events so it works with touch (iPad) as well as mouse — and tracks the
+    row under the finger via elementFromPoint, since touchmove doesn't
+    retarget the way mousemove does. The lowest-indexed selected row's item
     cell grows a small menu button (⋮) offering Copy / Cut / Paste / View
-    selected below / Encapsulate as recipe (inline name+yield form).
+    selected below. Creating a new recipe from a selection now happens from
+    buttons on the "view selected below" display rather than from this menu.
 
 Font size
     Everything scales off one CSS variable, --rgw-font-size (default 16px),
@@ -58,7 +61,7 @@ class RecipeGridWidget(anywidget.AnyWidget):
                                                       # DataFrameWidget.update_column_width()
     focus_seq   = traitlets.Int(0).tag(sync=True)  # bump to focus the add-row input
 
-    selected_rows = traitlets.List(traitlets.Int()).tag(sync=True)   # [] or [lo, hi] inclusive
+    selected_rows = traitlets.List(traitlets.Int()).tag(sync=True)   # arbitrary set of row indices, not necessarily contiguous
     has_clipboard = traitlets.Bool(False).tag(sync=True)
 
     _css = """
@@ -141,6 +144,19 @@ class RecipeGridWidget(anywidget.AnyWidget):
       let scheduled = false;
       let focusPending = false;
       let dragAnchor = null;
+      let baseSelection = new Set();   // selection state before the current gesture
+      let dragMoved = false;
+
+      // Shared by both the per-draw handle listeners and the once-bound
+      // root-level listeners below, so it must live out here rather than
+      // inside draw().
+      const previewRange = (row) => {
+        const merged = new Set(baseSelection);
+        const lo = Math.min(dragAnchor, row), hi = Math.max(dragAnchor, row);
+        for (let k = lo; k <= hi; k++) merged.add(k);
+        model.set("selected_rows", Array.from(merged).sort((a, b) => a - b));
+        model.save_changes();
+      };
 
       const draw = () => {
         const cols   = model.get("columns")    || [];
@@ -153,9 +169,9 @@ class RecipeGridWidget(anywidget.AnyWidget):
         const widths = model.get("col_widths") || {};
         const iidx   = cols.indexOf("item");
 
-        const sel   = model.get("selected_rows") || [];
-        const selLo = sel.length === 2 ? sel[0] : null;
-        const selHi = sel.length === 2 ? sel[1] : null;
+        const sel    = model.get("selected_rows") || [];
+        const selSet = new Set(sel);
+        const selMin = sel.length ? Math.min(...sel) : null;
 
         // Fallback width mirrors update_column_width's own default
         // (5 + 8*len) for any column it hasn't sized yet.
@@ -173,8 +189,8 @@ class RecipeGridWidget(anywidget.AnyWidget):
 
         rows.forEach((r, i) => {
           const f = flags[i] || {};
-          const inSel = !f.header && selLo !== null && i >= selLo && i <= selHi;
-          const isFirstSel = inSel && i === selLo;
+          const inSel = !f.header && selSet.has(i);
+          const isFirstSel = inSel && i === selMin;
 
           html += `<tr class="${f.header ? "rgw-header" : "rgw-row"}${inSel ? " rgw-selected" : ""}">`;
 
@@ -259,18 +275,16 @@ class RecipeGridWidget(anywidget.AnyWidget):
             });
           }));
 
-        // ── selection: drag (or tap) on handle cells ───────────────────────
-        const setSelection = (a, b) => {
-          model.set("selected_rows", [Math.min(a, b), Math.max(a, b)]);
-          model.save_changes();
-        };
-
+        // ── selection: tap toggles one row, drag adds a range on top of
+        // whatever's already selected ────────────────────────────────────
         el.querySelectorAll(".rgw-handle").forEach((td) => {
           td.addEventListener("pointerdown", (e) => {
             dragAnchor = +td.dataset.row;
+            dragMoved = false;
+            baseSelection = new Set(model.get("selected_rows") || []);
             el.setPointerCapture(e.pointerId);
-            setSelection(dragAnchor, dragAnchor);
             closeMenu();
+            previewRange(dragAnchor);
           });
         });
         el.querySelectorAll(".rgw-menu-btn").forEach((btn) => {
@@ -295,10 +309,21 @@ class RecipeGridWidget(anywidget.AnyWidget):
           const cell = document.elementFromPoint(e.clientX, e.clientY)?.closest(".rgw-handle");
           if (!cell) return;
           const row = +cell.dataset.row;
-          model.set("selected_rows", [Math.min(dragAnchor, row), Math.max(dragAnchor, row)]);
-          model.save_changes();
+          if (row !== dragAnchor) dragMoved = true;
+          previewRange(row);
         });
-        el.addEventListener("pointerup", () => { dragAnchor = null; });
+        el.addEventListener("pointerup", () => {
+          if (dragAnchor === null) return;
+          // A plain tap (no movement) on a row that was already selected
+          // means "deselect it", not "re-add it".
+          if (!dragMoved && baseSelection.has(dragAnchor)) {
+            const merged = new Set(baseSelection);
+            merged.delete(dragAnchor);
+            model.set("selected_rows", Array.from(merged).sort((a, b) => a - b));
+            model.save_changes();
+          }
+          dragAnchor = null;
+        });
 
         // Clicking anywhere that isn't a handle/menu clears the selection.
         el.addEventListener("pointerdown", (e) => {
@@ -336,10 +361,9 @@ class RecipeGridWidget(anywidget.AnyWidget):
               <button data-action="cut">Cut</button>
               <button data-action="paste" ${hasClip ? "" : "disabled"}>Paste</button>
               <button data-action="view_below">View selected below</button>
-              <button data-action="encapsulate">Encapsulate as recipe&hellip;</button>
             `;
           } else {
-            // View / Flatten are read-only: no cut/paste/encapsulate
+            // View / Flatten are read-only: no cut/paste
             menu.innerHTML = `
               <button data-action="copy">Copy</button>
               <button data-action="view_below">View selected below</button>
@@ -348,38 +372,9 @@ class RecipeGridWidget(anywidget.AnyWidget):
           menu.querySelectorAll("button[data-action]").forEach((b) =>
             b.addEventListener("click", (ev) => {
               ev.stopPropagation();
-              if (b.dataset.action === "encapsulate") { renderEncapsulateForm(); return; }
               model.send({ type: "selection_action", action: b.dataset.action });
               closeMenu();
             }));
-        };
-
-        const renderEncapsulateForm = () => {
-          menu.innerHTML = `
-            <div class="rgw-menu-form">
-              <label>Name<input class="rgw-enc-name" placeholder="new recipe name"></label>
-              <label>Yield<input class="rgw-enc-qty" value="1 ct"></label>
-              <div class="rgw-menu-form-btns">
-                <button data-action="encapsulate-confirm">Create</button>
-                <button data-action="encapsulate-cancel">Cancel</button>
-              </div>
-            </div>
-          `;
-          const nameInp = menu.querySelector(".rgw-enc-name");
-          const qtyInp  = menu.querySelector(".rgw-enc-qty");
-          nameInp.focus();
-          menu.querySelector('[data-action="encapsulate-confirm"]').addEventListener("click", (ev) => {
-            ev.stopPropagation();
-            const name = nameInp.value.trim();
-            if (!name) { nameInp.classList.add("rgw-invalid"); return; }
-            model.send({ type: "selection_action", action: "encapsulate",
-                         name, quantity: qtyInp.value.trim() || "1 ct" });
-            closeMenu();
-          });
-          menu.querySelector('[data-action="encapsulate-cancel"]').addEventListener("click", (ev) => {
-            ev.stopPropagation();
-            renderActions();
-          });
         };
 
         renderActions();
