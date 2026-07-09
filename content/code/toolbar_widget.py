@@ -79,7 +79,7 @@ class ToolbarWidget(anywidget.AnyWidget):
         background: var(--mv-surface, #fff); color: var(--mv-ink, #1c2733);
     }
     .tbw-dbseg input:focus { outline: none; background: var(--mv-accent-soft, #eaf1fe); }
-    .tbw-dbseg input.tbw-invalid { color: var(--mv-danger, #c0392b); }
+    .tbw-dbseg input.tbw-invalid { color: var(--mv-danger, #c0392b) !important; }
     .tbw-dbseg button {
         border: none; border-left: 1px solid var(--mv-border, #dde3ea);
         background: var(--mv-page, #f7f9fb); padding: 0 10px; height: 30px;
@@ -116,7 +116,7 @@ class ToolbarWidget(anywidget.AnyWidget):
         padding: 5px 8px; font: inherit; background: var(--mv-surface, #fff);
         color: var(--mv-ink, #1c2733);
     }
-    .tbw-mult-add.tbw-invalid { border-color: var(--mv-danger, #c0392b); }
+    .tbw-mult-add.tbw-invalid { border-color: var(--mv-danger, #c0392b) !important; }
 
     .tbw-spacer { flex: 1; }
 
@@ -162,7 +162,7 @@ class ToolbarWidget(anywidget.AnyWidget):
         padding: 5px 10px; font: inherit; cursor: pointer;
     }
     .tbw-pop-sep { border-top: 1px solid var(--mv-border-soft, #ebeff3); margin: 8px 0; }
-    .tbw-pop-row input.tbw-invalid { border-color: var(--mv-danger, #c0392b); }
+    .tbw-pop-row input.tbw-invalid { border-color: var(--mv-danger, #c0392b) !important; }
     .tbw-err {
         color: var(--mv-muted, #66727f); font-size: 11.5px; min-height: 14px; margin-top: 2px;
     }
@@ -400,13 +400,39 @@ class ToolbarWidget(anywidget.AnyWidget):
           errIngredient.textContent = "";
         }
       };
+      const positionPop = (pop) => {
+        const body = pop.querySelector(".tbw-pop-body");
+        // Measure against the toolbar's own box, not window.innerWidth --
+        // inside Jupyter the widget usually sits in a narrower notebook/
+        // output container, so a popover can clip against that edge while
+        // still reading as on-screen relative to the full browser viewport.
+        const bounds = el.getBoundingClientRect();
+
+        body.style.left = "";
+        body.style.right = "0";
+        let r = body.getBoundingClientRect();
+        if (r.left < bounds.left) {
+          body.style.right = "";
+          body.style.left = "0";
+          r = body.getBoundingClientRect();
+        }
+        // symmetric guard: if left-anchoring now overflows the right edge,
+        // fall back to whichever side clips less
+        if (r.right > bounds.right) {
+          body.style.left = "";
+          body.style.right = "0";
+        }
+      };
       el.querySelectorAll(".tbw-pop").forEach((pop) => {
         const btn = pop.querySelector(".tbw-btn");
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
           const wasOpen = pop.classList.contains("open");
           el.querySelectorAll(".tbw-pop.open").forEach(closePop);
-          if (!wasOpen) pop.classList.add("open");
+          if (!wasOpen) {
+            pop.classList.add("open");
+            positionPop(pop);
+          }
         });
       });
       document.addEventListener("pointerdown", (e) => {

@@ -206,6 +206,15 @@ body[data-jp-theme-light="false"] .mv-menu .jupyter-button:hover:enabled {
     background: #24365a;
 }
 
+/* invalid-state helper for widgets that toggle it via add_class/remove_class
+   instead of the old style.text_color pattern (more reliable across
+   different @jupyter-widgets frontend bundle versions — notably JupyterLite's,
+   which doesn't always honor clearing an inline style back to None) */
+.mv-app .mv-invalid, .mv-app .mv-invalid input {
+    color: var(--mv-danger, #c0392b) !important;
+}
+
+
 /* ── top Tab bar (Menu Explorer / Order Guide Read) ────────────────── */
 /* lm- is current Lumino; p- covers older phosphor-based frontends */
 .mv-tabs .lm-TabBar-tab, .mv-tabs .p-TabBar-tab {

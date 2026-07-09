@@ -563,7 +563,7 @@ class DataFrameExplorer:
                                         clear scale (show full recipe).
         '''
         if change['new'] in self.allvals:
-            change['owner'].style.text_color = self.defcolor
+            change['owner'].remove_class('mv-invalid')
             iname = change['new']
                 
             # Read and clear the back-navigation flag before anything else.
@@ -589,7 +589,7 @@ class DataFrameExplorer:
             self._refresh_rename_button()
 
         else:
-            change['owner'].style.text_color = 'red'
+            change['owner'].add_class('mv-invalid')
             self._scale_pending = None
             self.df_widget._navigating_back = False
             self._refresh_rename_button()
