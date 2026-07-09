@@ -16,6 +16,7 @@ def main():
     
     # Create the order guide reader with the cost calculator instance
     order_reader = OrderGuideReader(cc=cc)
+    order_reader.container.add_class('mv-app')
     
     # Create and display the explorer
     explorer = DataFrameExplorer(cc=cc)
@@ -25,6 +26,7 @@ def main():
     tab.children = [explorer.vbox, order_reader.container]
     tab.set_title(0, 'Menu Explorer')
     tab.set_title(1, 'Order Guide Reader')
+    tab.add_class('mv-tabs')
     
     # Display the tabbed interface
     display(tab)

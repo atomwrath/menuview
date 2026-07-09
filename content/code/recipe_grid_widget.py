@@ -65,68 +65,147 @@ class RecipeGridWidget(anywidget.AnyWidget):
     has_clipboard = traitlets.Bool(False).tag(sync=True)
 
     _css = """
-    .rgw-root { font-family: var(--jp-ui-font-family, sans-serif);
-                font-size: var(--rgw-font-size, 16px);   /* <- change this one value */
-                color: var(--jp-ui-font-color1, #333);
-                position: relative; }   /* containing block for the popup menu */
-    .rgw-title { font-size: 0.85em; color: var(--jp-ui-font-color2, #888); font-weight: bold;
-                 padding: 1px 2px; }
-    table.rgw { border-collapse: collapse; margin: 2px 0; table-layout: fixed; }
-    table.rgw th { text-align: left; font-weight: normal; color: var(--jp-ui-font-color2, #555);
-                   padding: 2px 8px 2px 4px; border-bottom: 1px solid var(--jp-border-color1, #ccc);
+    /* ── Workbench palette: override any of these on a parent element ── */
+    .rgw-root { --rgw-font-size: 16px;
+                --rgw-ink:        var(--jp-ui-font-color1, #1c2733);
+                --rgw-muted:      #66727f;
+                --rgw-border:     #dde3ea;
+                --rgw-border-soft:#ebeff3;
+                --rgw-head-bg:    #f7f9fb;
+                --rgw-accent:     #2563eb;
+                --rgw-accent-soft:#eaf1fe;
+                --rgw-accent-bord:#bcd3fb;
+                --rgw-sel:        #dcebff;
+                --rgw-cost:       #0f766e;
+                --rgw-hover:      #fafbfc;
+                font-family: var(--jp-ui-font-family, -apple-system, sans-serif);
+                font-size: var(--rgw-font-size);
+                color: var(--rgw-ink);
+                position: relative; }
+                
+    /* ── Dark theme override — same variables, new values ────────────── */
+    body[data-jp-theme-light="false"] .rgw-root {
+        --rgw-muted:       #9aa5af;
+        --rgw-border:      #3a4149;
+        --rgw-border-soft: #2e343b;
+        --rgw-head-bg:     #262b31;
+        --rgw-accent:      #5b9dff;
+        --rgw-accent-soft: #1c2a3f;
+        --rgw-accent-bord: #2f4b74;
+        --rgw-sel:         #1e3352;
+        --rgw-cost:        #4fd1b8;
+        --rgw-hover:       #2a3038;
+    }
+
+    /* Fallback if something ever renders the widget outside a Jupyter
+       shell (no data-jp-theme-light attribute present) — defer to the OS. */
+    @media (prefers-color-scheme: dark) {
+        body:not([data-jp-theme-light]) .rgw-root {
+            --rgw-muted:       #9aa5af;
+            --rgw-border:      #3a4149;
+            --rgw-border-soft: #2e343b;
+            --rgw-head-bg:     #262b31;
+            --rgw-accent:      #5b9dff;
+            --rgw-accent-soft: #1c2a3f;
+            --rgw-accent-bord: #2f4b74;
+            --rgw-sel:         #1e3352;
+            --rgw-cost:        #4fd1b8;
+            --rgw-hover:       #2a3038;
+        }
+    }
+
+    .rgw-title { font-size: 0.7em; font-weight: 700; letter-spacing: 0.07em;
+                 text-transform: uppercase; color: var(--rgw-muted);
+                 padding: 2px 2px; }
+
+    table.rgw { border-collapse: collapse; margin: 2px 0; table-layout: fixed;
+                background: var(--jp-layout-color1, #fff); }
+    table.rgw th { text-align: left; font-size: 0.68em; font-weight: 700;
+                   letter-spacing: 0.06em; text-transform: uppercase;
+                   color: var(--rgw-muted);
+                   padding: 5px 8px 5px 4px;
+                   border-bottom: 1px solid var(--rgw-border-soft);
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    table.rgw td { padding: 2px 8px 2px 4px; border-bottom: 1px solid var(--jp-border-color2, #eee);
+    table.rgw td { padding: 4px 8px 4px 4px;
+                   border-bottom: 1px solid var(--rgw-border-soft);
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                   color: var(--jp-ui-font-color1, inherit); }
-    tr.rgw-header td { font-weight: bold; border-bottom: 2px solid var(--jp-border-color0, #bbb); }
+                   color: var(--rgw-ink); }
+
+    /* header row reads as the card header band */
+    tr.rgw-header td { font-weight: 700; background: var(--rgw-head-bg);
+                       border-bottom: 1px solid var(--rgw-border); }
     tr.rgw-header td.rgw-item { font-style: italic; font-weight: normal;
-                                color: var(--jp-ui-font-color2, #555); }
-    tr.rgw-selected td { background: var(--jp-brand-color3, #cfe4ff); }
+                                color: var(--rgw-muted); background: var(--rgw-head-bg); }
+
+    /* numeric columns: right-aligned, lining figures; cost in ledger green */
+    td.rgw-c-quantity, th.rgw-c-quantity,
+    td.rgw-c-equ-quant, th.rgw-c-equ-quant,
+    td.rgw-c-cost, th.rgw-c-cost,
+    td.rgw-c-menu-price, th.rgw-c-menu-price {
+        text-align: right; font-variant-numeric: tabular-nums; }
+    td.rgw-c-quantity input, td.rgw-c-equ-quant input { text-align: right; }
+    td.rgw-c-cost { color: var(--rgw-cost); font-weight: 600; }
+    tr.rgw-header td.rgw-c-cost { font-size: 1.05em; }
+
+    tr.rgw-selected td { background: var(--rgw-sel); }
+    tr.rgw-selected td:first-child { box-shadow: inset 3px 0 0 var(--rgw-accent); }
+    tr.rgw-row:hover td { background: var(--rgw-hover); }
+    tr.rgw-selected:hover td { background: var(--rgw-sel); }
+
     .rgw-btns { white-space: nowrap; overflow: visible; }
-    .rgw button { font-size: 0.85em; padding: 1px 8px; margin-right: 3px;
-                  border: 1px solid var(--jp-border-color2, #bbb);
-                  border-radius: 3px;
-                  background: var(--jp-layout-color2, #f5f5f5);
-                  color: var(--jp-ui-font-color1, #333);
-                  cursor: pointer; }
-    .rgw button:hover:not(:disabled) { background: var(--jp-layout-color3, #e2e2e2); }
-    .rgw button:disabled { opacity: 0.45; cursor: default; }
-    .rgw button.rgw-below-open { background: var(--jp-warn-color1, #f0ad4e);
-                                 border-color: var(--jp-warn-color0, #d99b3c);
-                                 color: #fff; }
-    .rgw button.rgw-below-open:hover { background: var(--jp-warn-color0, #e39b35); }
-    .rgw select { font-size: 0.85em; padding: 1px 3px; max-width: 100%;
+    .rgw button { font-size: 0.75em; padding: 2px 9px; margin-right: 3px;
+                  border: 1px solid var(--rgw-border); border-radius: 6px;
                   background: var(--jp-layout-color1, #fff);
-                  color: var(--jp-ui-font-color1, #333);
-                  border: 1px solid var(--jp-border-color2, #bbb); }
-    .rgw input { font-size: 0.9em; padding: 1px 4px; border: 1px solid var(--jp-border-color2, #ccc);
-                 border-radius: 2px; width: 100%; min-width: 40px;
-                 box-sizing: border-box; }
+                  color: var(--rgw-muted); cursor: pointer; }
+    .rgw button:hover:not(:disabled) { background: var(--rgw-accent-soft);
+                                       border-color: var(--rgw-accent-bord);
+                                       color: var(--rgw-accent); }
+    .rgw button:disabled { opacity: 0.45; cursor: default; }
+    .rgw button.rgw-below-open { background: var(--rgw-accent);
+                                 border-color: var(--rgw-accent); color: #fff; }
+    .rgw button.rgw-below-open:hover { background: #1d4fd8; color: #fff; }
+
+    .rgw select { font-size: 0.75em; padding: 2px 5px; max-width: 100%;
+                  border: 1px solid var(--rgw-border); border-radius: 6px;
+                  background: var(--jp-layout-color1, #fff); color: var(--rgw-ink); }
+    .rgw input { font-size: 0.9em; padding: 2px 5px;
+                 border: 1px solid var(--rgw-border); border-radius: 6px;
+                 width: 100%; min-width: 40px; box-sizing: border-box; }
+    .rgw input:focus { outline: 2px solid var(--rgw-accent-soft);
+                       border-color: var(--rgw-accent); }
     .rgw input.rgw-invalid { border-color: var(--jp-error-color1, red);
                              outline-color: var(--jp-error-color1, red); }
-    tr.rgw-row:hover td { background: var(--jp-layout-color2, #fafafa); }
-    tr.rgw-selected:hover td { background: var(--jp-brand-color3, #cfe4ff); }
+                             
+    .mv-app select, .mv-app .widget-dropdown select {
+      background: var(--mv-surface);
+      border: 1px solid var(--mv-border);
+      border-radius: 6px;
+      color: var(--mv-ink);
+    }
 
-    /* selection handle (item column, non-header rows) */
+    /* selection handle */
     td.rgw-handle { cursor: grab; text-align: center; position: relative;
                     touch-action: none; }
     td.rgw-handle::before { content: "\\22EE"; opacity: 0.25; }
     .rgw-menu-btn { font-size: 0.8em; padding: 0 5px; margin-left: 4px;
-                    border-radius: 3px;
-                    border: 1px solid var(--jp-border-color2, #bbb);
-                    background: var(--jp-layout-color2, #f5f5f5);
-                    color: var(--jp-ui-font-color1, #333); cursor: pointer; }
+                    border-radius: 6px;
+                    border: 1px solid var(--rgw-accent-bord);
+                    background: var(--rgw-accent-soft);
+                    color: var(--rgw-accent); cursor: pointer; }
     .rgw-menu { position: absolute; z-index: 20; display: flex; flex-direction: column;
                 background: var(--jp-layout-color1, #fff);
-                border: 1px solid var(--jp-border-color1, #999);
-                border-radius: 4px; box-shadow: 0 2px 10px rgba(0,0,0,0.35); min-width: 160px; }
+                border: 1px solid var(--rgw-border);
+                border-radius: 8px; overflow: hidden;
+                box-shadow: 0 4px 16px rgba(28,39,51,0.14); min-width: 160px; }
     .rgw-menu button { text-align: left; padding: 6px 10px; border: none; background: none;
-                       color: var(--jp-ui-font-color1, #333); font-size: 0.85em; cursor: pointer;
+                       border-radius: 0; margin: 0;
+                       color: var(--rgw-ink); font-size: 0.85em; cursor: pointer;
                        width: 100%; }
-    .rgw-menu button:hover:not(:disabled) { background: var(--jp-layout-color2, #eee); }
+    .rgw-menu button:hover:not(:disabled) { background: var(--rgw-accent-soft);
+                                            color: var(--rgw-accent); }
     .rgw-menu button:disabled { opacity: 0.4; cursor: default; }
     .rgw-menu-form { display: flex; flex-direction: column; padding: 6px 8px; gap: 4px; }
-    .rgw-menu-form label { font-size: 0.8em; color: var(--jp-ui-font-color2, #888);
+    .rgw-menu-form label { font-size: 0.8em; color: var(--rgw-muted);
                            display: flex; flex-direction: column; gap: 2px; }
     .rgw-menu-form input { font-size: 0.85em; }
     .rgw-menu-form-btns { display: flex; gap: 4px; margin-top: 4px; }
@@ -168,7 +247,9 @@ class RecipeGridWidget(anywidget.AnyWidget):
         const opts   = model.get("ingredients")|| [];
         const widths = model.get("col_widths") || {};
         const iidx   = cols.indexOf("item");
-
+        // NEW: css-safe per-column class, e.g. "equ quant" -> "rgw-c-equ-quant"
+        const colCls = (j) => "rgw-c-" +
+          String(cols[j]).toLowerCase().replace(/[^a-z0-9]+/g, "-");
         const sel    = model.get("selected_rows") || [];
         const selSet = new Set(sel);
         const selMin = sel.length ? Math.min(...sel) : null;
@@ -184,7 +265,7 @@ class RecipeGridWidget(anywidget.AnyWidget):
         html += `<table class="rgw"><colgroup><col style="width:64px">`;
         for (const c of cols) html += `<col style="width:${widthFor(c)}px">`;
         html += `</colgroup><thead><tr><th></th>`;
-        for (const c of cols) html += `<th>${esc(c)}</th>`;
+        cols.forEach((c, j) => { html += `<th class="${colCls(j)}">${esc(c)}</th>`; });
         html += `</tr></thead><tbody>`;
 
         rows.forEach((r, i) => {
@@ -230,16 +311,16 @@ class RecipeGridWidget(anywidget.AnyWidget):
             }
 
             if (cell.k === "s") {
-              html += `<td><input class="rgw-scale" value="${esc(v)}"></td>`;
+              html += `<td class="${colCls(j)}"><input class="rgw-scale" value="${esc(v)}"></td>`;
             } else if (cell.e && (cell.k === "t" || cell.k === "i")) {
               const list = cell.k === "i" ? ` list="${dlid}"` : "";
               const addrow = (f.add_row && cell.k === "i") ? ` data-addrow="1"` : "";
               const inv = cell.inv ? " rgw-invalid" : "";
-              html += `<td><input class="rgw-cell${inv}" data-row="${i}" ` +
-                `data-col="${esc(cols[j])}" data-orig="${esc(v)}" ` +
-                `value="${esc(v)}"${list}${addrow}></td>`;
+              html += `<td class="${colCls(j)}"><input class="rgw-cell${inv}" data-row="${i}" ` +
+                 `data-col="${esc(cols[j])}" data-orig="${esc(v)}" ` +
+                 `value="${esc(v)}"${list}${addrow}></td>`;
             } else {
-              html += `<td>${esc(v)}</td>`;
+              html += `<td class="${colCls(j)}">${esc(v)}</td>`;
             }
           });
           html += `</tr>`;

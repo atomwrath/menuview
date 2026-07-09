@@ -1,10 +1,26 @@
 import pandas as pd
 import ipywidgets as widgets
 import os
+import io
+import contextlib
 from IPython.display import display, clear_output, HTML
 from costcalulator import CostCalculator
 from utils import *
 from data_frame_widget import DataFrameWidget, DisplayDataFrameWidget
+from toolbar_widget import ToolbarWidget
+from menuview_theme import theme_widget
+
+class _TextBoxShim:
+    """Minimal stand-in for an ipywidgets Text box, so create_recipe /
+    create_ingredient can be called unmodified with a plain string coming
+    from the toolbar's anywidget events instead of a real Text widget."""
+    class _Style:
+        def __init__(self):
+            self.text_color = None
+    def __init__(self, value):
+        self.value = value
+        self.style = _TextBoxShim._Style()
+
 
 class DataFrameExplorer:
     def __init__(self, cc=CostCalculator()):
@@ -36,130 +52,134 @@ class DataFrameExplorer:
         # Using an intermediate variable avoids a race with the searchinput observer.
         self._scale_pending = None
 
-        # top utility displays
-        cost_chooser = widgets.Text(value='menucost.xlsx')
-        cost_button = widgets.Button(description='write cost excel')
-        cost_button.on_click(lambda x: self.cc.ordered_xlsx(str(cost_chooser.value), cost_multipliers=self.df_widget.cost_multipliers))
-        self.cost_display = widgets.HBox([widgets.Label(value='cost export filename'), cost_chooser, cost_button])
+        # # top utility displays
+        # cost_chooser = widgets.Text(value='menucost.xlsx')
+        # cost_button = widgets.Button(description='write cost excel')
+        # cost_button.on_click(lambda x: self.cc.ordered_xlsx(str(cost_chooser.value), cost_multipliers=self.df_widget.cost_multipliers))
+        # self.cost_display = widgets.HBox([widgets.Label(value='cost export filename'), cost_chooser, cost_button])
             
-        database_chooser = widgets.Text(value=self.excel_filename)
-        # Colour the filename red on startup when the default file doesn't exist yet
-        database_chooser.style.text_color = self.defcolor if os.path.exists(self.excel_filename) else 'red'
+        # database_chooser = widgets.Text(value=self.excel_filename)
+        # # Colour the filename red on startup when the default file doesn't exist yet
+        # database_chooser.style.text_color = self.defcolor if os.path.exists(self.excel_filename) else 'red'
 
-        def _on_db_name_change(change):
-            """Recolour the text box to show whether the typed filename exists on disk."""
-            database_chooser.style.text_color = (
-                self.defcolor if os.path.exists(change['new'].strip()) else 'red'
-            )
-        database_chooser.observe(_on_db_name_change, names='value')
+        # def _on_db_name_change(change):
+        #     """Recolour the text box to show whether the typed filename exists on disk."""
+        #     database_chooser.style.text_color = (
+        #         self.defcolor if os.path.exists(change['new'].strip()) else 'red'
+        #     )
+        # database_chooser.observe(_on_db_name_change, names='value')
 
-        loadbutton = widgets.Button(description='reload database')
-        writebutton = widgets.Button(description='write database')
+        # loadbutton = widgets.Button(description='reload database')
+        # writebutton = widgets.Button(description='write database')
 
-        # --- inline confirmation / error row (hidden by default) ---
-        _confirm_msg = widgets.HTML(value='')
-        _confirm_yes = widgets.Button(
-            description='✓ Confirm',
-            button_style='warning',
-            layout=widgets.Layout(width='110px')
-        )
-        _confirm_no = widgets.Button(
-            description='✗ Cancel',
-            button_style='danger',
-            layout=widgets.Layout(width='90px')
-        )
-        _confirm_row = widgets.HBox(
-            [_confirm_msg, _confirm_yes, _confirm_no],
-            layout=widgets.Layout(display='none', align_items='center')
-        )
+        # # --- inline confirmation / error row (hidden by default) ---
+        # _confirm_msg = widgets.HTML(value='')
+        # _confirm_yes = widgets.Button(
+        #     description='✓ Confirm',
+        #     button_style='warning',
+        #     layout=widgets.Layout(width='110px')
+        # )
+        # _confirm_no = widgets.Button(
+        #     description='✗ Cancel',
+        #     button_style='danger',
+        #     layout=widgets.Layout(width='90px')
+        # )
+        # _confirm_row = widgets.HBox(
+        #     [_confirm_msg, _confirm_yes, _confirm_no],
+        #     layout=widgets.Layout(display='none', align_items='center')
+        # )
 
-        def _on_write_database(b):
-            """Write the current in-memory database to the named file.
+        # def _on_write_database(b):
+        #     """Write the current in-memory database to the named file.
 
-            • File EXISTS  → overwrite immediately, no prompt.
-            • File MISSING → ask the user to confirm saving the current db
-                            under the new name (i.e. a "Save As", not a blank file).
-            """
-            fname = database_chooser.value.strip()
-            _confirm_row.layout.display = 'none'
-            if os.path.exists(fname):
-                try:
-                    self.cc.write_cc(fname)
-                except Exception as exc:
-                    _confirm_msg.value = (
-                        f"<b style='color:red'>⚠ Error writing '{fname}': {exc}</b>"
-                    )
-                    _confirm_row.layout.display = 'flex'
-            else:
-                _confirm_msg.value = (
-                    f"<b style='color:darkorange'>⚠ '{fname}' does not exist. "
-                    f"Save current database with this filename?</b>"
-                )
-                _confirm_row.layout.display = 'flex'
+        #     • File EXISTS  → overwrite immediately, no prompt.
+        #     • File MISSING → ask the user to confirm saving the current db
+        #                     under the new name (i.e. a "Save As", not a blank file).
+        #     """
+        #     fname = database_chooser.value.strip()
+        #     _confirm_row.layout.display = 'none'
+        #     if os.path.exists(fname):
+        #         try:
+        #             self.cc.write_cc(fname)
+        #         except Exception as exc:
+        #             _confirm_msg.value = (
+        #                 f"<b style='color:red'>⚠ Error writing '{fname}': {exc}</b>"
+        #             )
+        #             _confirm_row.layout.display = 'flex'
+        #     else:
+        #         _confirm_msg.value = (
+        #             f"<b style='color:darkorange'>⚠ '{fname}' does not exist. "
+        #             f"Save current database with this filename?</b>"
+        #         )
+        #         _confirm_row.layout.display = 'flex'
 
-        def _on_confirm_write(b):
-            """User confirmed the Save-As: write current database to the new filename."""
-            fname = database_chooser.value.strip()
-            try:
-                self.cc.write_cc(fname)
-                database_chooser.style.text_color = 'black'
-                _confirm_row.layout.display = 'none'
-            except Exception as exc:
-                _confirm_msg.value = (
-                    f"<b style='color:red'>⚠ Error writing '{fname}': {exc}</b>"
-                )
+        # def _on_confirm_write(b):
+        #     """User confirmed the Save-As: write current database to the new filename."""
+        #     fname = database_chooser.value.strip()
+        #     try:
+        #         self.cc.write_cc(fname)
+        #         database_chooser.style.text_color = 'black'
+        #         _confirm_row.layout.display = 'none'
+        #     except Exception as exc:
+        #         _confirm_msg.value = (
+        #             f"<b style='color:red'>⚠ Error writing '{fname}': {exc}</b>"
+        #         )
 
-        def _on_cancel_confirm(b):
-            _confirm_row.layout.display = 'none'
+        # def _on_cancel_confirm(b):
+        #     _confirm_row.layout.display = 'none'
 
-        def _reset_to_blank():
-            """Replace the current in-memory database with a fresh, empty one."""
-            blank = CostCalculator()
-            blank.costdf = pd.DataFrame(columns=blank.cost_columns)
-            blank.uni_g  = pd.DataFrame(columns=blank.guide_columns)
-            # Update the shared cc in-place so df_widget / mdf_widget keep their
-            # existing reference to the same object.
-            self.cc.__dict__.update(blank.__dict__)
-            self.allvals = set()
-            self.searchinput.options = ()
-            self.df_widget.all_ingredients = self.allvals
-            self.menubutton_hbox.children = tuple(self._build_menu_buttons())
+        # def _reset_to_blank():
+        #     """Replace the current in-memory database with a fresh, empty one."""
+        #     blank = CostCalculator()
+        #     blank.costdf = pd.DataFrame(columns=blank.cost_columns)
+        #     blank.uni_g  = pd.DataFrame(columns=blank.guide_columns)
+        #     # Update the shared cc in-place so df_widget / mdf_widget keep their
+        #     # existing reference to the same object.
+        #     self.cc.__dict__.update(blank.__dict__)
+        #     self.allvals = set()
+        #     self.searchinput.options = ()
+        #     self.df_widget.all_ingredients = self.allvals
+        #     self.menubutton_hbox.children = tuple(self._build_menu_buttons())
 
-        def _on_reload_database(b):
-            """Load from file, or create a blank in-memory database when file is missing."""
-            fname = database_chooser.value.strip()
-            _confirm_row.layout.display = 'none'
-            if os.path.exists(fname):
-                self.reload_database(fname)
-            else:
-                _reset_to_blank()
-                # Keep text red: the file doesn't exist on disk yet
-                database_chooser.style.text_color = 'red'
+        # def _on_reload_database(b):
+        #     """Load from file, or create a blank in-memory database when file is missing."""
+        #     fname = database_chooser.value.strip()
+        #     _confirm_row.layout.display = 'none'
+        #     if os.path.exists(fname):
+        #         self.reload_database(fname)
+        #     else:
+        #         _reset_to_blank()
+        #         # Keep text red: the file doesn't exist on disk yet
+        #         database_chooser.style.text_color = 'red'
 
-        loadbutton.on_click(_on_reload_database)
-        writebutton.on_click(_on_write_database)
-        _confirm_yes.on_click(_on_confirm_write)
-        _confirm_no.on_click(_on_cancel_confirm)
+        # loadbutton.on_click(_on_reload_database)
+        # writebutton.on_click(_on_write_database)
+        # _confirm_yes.on_click(_on_confirm_write)
+        # _confirm_no.on_click(_on_cancel_confirm)
 
-        self.database_display = widgets.VBox([
-            widgets.HBox([
-                widgets.Label(value='Database filename:'),
-                database_chooser, loadbutton, writebutton
-            ]),
-            _confirm_row   # hidden until needed; appears below the toolbar row
-        ])
+        # self.database_display = widgets.VBox([
+        #     widgets.HBox([
+        #         widgets.Label(value=''),
+        #         database_chooser, loadbutton, writebutton
+        #     ]),
+        #     _confirm_row   # hidden until needed; appears below the toolbar row
+        # ])
 
-        # add recipe
-        addrecipe_text = widgets.Text(value='', placeholder='recipe name')
-        addrecipe_button = widgets.Button(description='create recipe')
-        addrecipe_button.on_click(lambda x: self.create_recipe(addrecipe_text))
-        addrecipe_hbox = widgets.HBox([addrecipe_text, addrecipe_button])
+        # # add recipe
+        # addrecipe_text = widgets.Text(value='', placeholder='recipe name')
+        # addrecipe_text.layout = widgets.Layout(flex='1 1 auto', min_width='120px')
+        # addrecipe_button = widgets.Button(description='+ recipe')
+        # addrecipe_button.on_click(lambda x: self.create_recipe(addrecipe_text))
+        # addrecipe_hbox = widgets.HBox([addrecipe_text, addrecipe_button])
+        # addrecipe_hbox.add_class('mv-pair')
         
-        # add ingredient
-        addingredient_text = widgets.Text(value='', placeholder='nickname, size, price')
-        addingredient_button = widgets.Button(description='create ingredient')
-        addingredient_button.on_click(lambda x: self.create_ingredient(addingredient_text))
-        addingredient_hbox = widgets.HBox([addingredient_text, addingredient_button])
+        # # add ingredient
+        # addingredient_text = widgets.Text(value='', placeholder='nickname, size, price')
+        # addingredient_text.layout = widgets.Layout(flex='1 1 auto', min_width='120px')
+        # addingredient_button = widgets.Button(description='+ ingredient')
+        # addingredient_button.on_click(lambda x: self.create_ingredient(addingredient_text))
+        # addingredient_hbox = widgets.HBox([addingredient_text, addingredient_button])
+        # addingredient_hbox.add_class('mv-pair')
 
         # main display
 
@@ -188,12 +208,14 @@ class DataFrameExplorer:
         self.rename_confirm_button.on_click(self.on_rename_confirm)
         self.duplicate_button = widgets.Button(description='Duplicate as new recipe', button_style='info')
         self.duplicate_button.on_click(self.on_duplicate_confirm)
+        self.delete_recipe_button = widgets.Button(description='Delete recipe', button_style='danger')
+        self.delete_recipe_button.on_click(self.on_delete_recipe_click)
         self.rename_cancel_button = widgets.Button(description='Cancel')
         self.rename_cancel_button.on_click(self.on_rename_cancel)
         self.rename_dialog = widgets.VBox(
             [self.rename_info_label,
              widgets.HBox([self.rename_new_name, self.rename_confirm_button,
-                           self.duplicate_button, self.rename_cancel_button])],
+                           self.duplicate_button, self.delete_recipe_button, self.rename_cancel_button])],
             layout={'display': 'none', 'border': '2px solid orange', 'padding': '5px', 'margin': '5px 0'}
         )
         self._rename_target = None   # nick the dialog is currently acting on
@@ -210,53 +232,53 @@ class DataFrameExplorer:
         )
         self._delete_pending = None   # (nickname, original_index, affected) awaiting confirmation
         
-        hide_toggles = [widgets.Label(value='Show/Hide columns:', layout=widgets.Layout(width='40%'))]
-        for col in self.hide_columns:
-            if col == 'equ quant':
-                continue  # Controlled by the unit text input below, not a checkbox
-            hide_quant = widgets.Checkbox(
-                value=False,
-                description=col,
-                disabled=False,
-                indent=False
-            )
-            hide_quant.observe(lambda change, col=col: self.hide_col(change, col), 'value')
-            hide_toggles.append(hide_quant)
+        # hide_toggles = []
+        # for col in self.hide_columns:
+        #     if col == 'equ quant':
+        #         continue  # Controlled by the unit text input below, not a checkbox
+        #     hide_quant = widgets.Checkbox(
+        #         value=False,
+        #         description=col,
+        #         disabled=False,
+        #         indent=False
+        #     )
+        #     hide_quant.observe(lambda change, col=col: self.hide_col(change, col), 'value')
+        #     hide_toggles.append(hide_quant)
  
-        # ── Equ Quant unit input (replaces the old checkbox) ─────────────────
-        # Empty / invalid  →  column hidden
-        # Valid pint unit  →  column shown, values converted to that unit
-        self.equ_quant_input = widgets.Text(
-            value='',
-            placeholder='e.g. 1/4 tsp, 0',
-            continuous_update=False,
-            layout=widgets.Layout(width='120px')
-        )
-        self.equ_quant_input.observe(self.on_equ_quant_unit_change, names='value')
+        # # ── Equ Quant unit input (replaces the old checkbox) ─────────────────
+        # # Empty / invalid  →  column hidden
+        # # Valid pint unit  →  column shown, values converted to that unit
+        # self.equ_quant_input = widgets.Text(
+        #     value='',
+        #     placeholder='e.g. 1/4 tsp, 0',
+        #     continuous_update=False,
+        #     layout=widgets.Layout(width='160px', flex='0 0 auto')
+        # )
+        # self.equ_quant_input.observe(self.on_equ_quant_unit_change, names='value')
 
-        hide_toggles.append(
-            widgets.Label(
-                value='equ quant',
-                layout=widgets.Layout(flex='0 0 auto', margin='0 4px 0 12px')
-            )
-        )
-        hide_toggles.append(self.equ_quant_input)
+        # hide_toggles.append(widgets.Box(layout=widgets.Layout(flex='1 1 auto')))
+        # hide_toggles.append(
+        #     widgets.Label(
+        #         value='equ quant',
+        #         layout=widgets.Layout(flex='0 0 auto', margin='0 0px 0 0')
+        #     )
+        # )
+        # hide_toggles.append(self.equ_quant_input)
 
 
  
-        self.hide_toggleVBox = widgets.HBox(hide_toggles)
+        # self.hide_toggleVBox = widgets.HBox(hide_toggles)
+        # self.hide_toggleVBox.add_class('mv-columns-row')
 
-        # set cost_picker
-        cost_selection_widget = widgets.ToggleButtons(
-            options=list(self.cost_select_method.keys()),
-            description='Cost selection method:',
-            disabled=False,
-            button_style='', # 'success', 'info', 'warning', 'danger' or '',
-        )
-        cost_selection_widget.observe(self.cost_selector, names='value')
+        # # set cost_picker
+        # cost_selection_widget = widgets.Dropdown(
+        #     options=list(self.cost_select_method.keys()),
+        #     layout=widgets.Layout(width='150px'),
+        # )
+        # cost_selection_widget.observe(self.cost_selector, names='value')
         
         # composition
-        self.dfdisplay = widgets.Output(layout={ 'overflow': 'scroll', 'border': '1px solid black'})
+        self.dfdisplay = widgets.Output(layout={'overflow': 'scroll'})
         self.df_widget = DataFrameWidget(
             pd.DataFrame(), width='90px',
             enabled_columns=self.enabled_columns,
@@ -273,19 +295,20 @@ class DataFrameExplorer:
         self.backbutton = self.df_widget.backbutton
         self.progress_bar = self.df_widget.progress_bar
         
-        # cost multipliers (cost 3.0x, cost 3.5x)
-        cost_mult_input = widgets.FloatsInput(
-            value=self.df_widget.cost_multipliers,
-            format = '.2f'
-        )
-        cost_mult_input.observe(self.set_cost_multipliers, names='value')
-        cost_mult_hbox = widgets.HBox([widgets.Label(value='Cost multipliers: '), cost_mult_input])
+        # # cost multipliers (cost 3.0x, cost 3.5x)
+        # cost_mult_input = widgets.FloatsInput(
+        #     value=self.df_widget.cost_multipliers,
+        #     format = '.2f'
+        # )
+        # cost_mult_input.observe(self.set_cost_multipliers, names='value')
+        # cost_mult_hbox = widgets.HBox([widgets.Label(value='Cost multipliers: '), cost_mult_input])
 
         # Add menu buttons
         self.menubutton_hbox = widgets.HBox(
             self._build_menu_buttons(),
             layout=widgets.Layout(width='auto', margin='5px 0')
         )
+        self.menubutton_hbox.add_class('mv-menu')
         
         topdisplay = widgets.VBox([
             self.menubutton_hbox,
@@ -293,40 +316,149 @@ class DataFrameExplorer:
             self.rename_dialog,
             self.delete_confirm_dialog,
             self.dfdisplay
-        ], layout={'border': '2px solid green'})
+        ])
+        topdisplay.add_class('mv-card')
         # mentions display
-        self.mdfdisplay = widgets.Output(layout={'border': '1px solid black'})        
+        self.mdfdisplay = widgets.Output()       
         self.bottom_label = widgets.Label(value='items containing...', style=self.fontstyle)
         self.mdf_widget = DisplayDataFrameWidget(pd.DataFrame(), width='90px', enabled_columns=[], 
                                         hide_columns=self.hide_columns, cc=self.cc, output=self.mdfdisplay, trigger=self.trigger_mentions)
-        bottom_display = widgets.VBox([self.bottom_label, self.mdfdisplay], layout={'border': '2px solid blue'})
+        self.bottom_label.add_class('mv-mhead')
+        bottom_display = widgets.VBox([self.bottom_label, self.mdfdisplay])
+        bottom_display.add_class('mv-card')
         
-        # Create tools section containing recipe and ingredient creation
-        tools_section = widgets.VBox([
-            addrecipe_hbox, 
-            addingredient_hbox
-        ], layout={'border': '1px solid gray', 'padding': '5px', 'margin': '5px'})
+        # # Create tools section containing recipe and ingredient creation
+        # def _eyebrow(text):
+        #     return widgets.HTML(f"<div class='mv-eyebrow'>{text}</div>")
+
+        # create_row = widgets.HBox([addrecipe_hbox, addingredient_hbox])
+        # create_row.add_class('mv-create-row')
+        # tools_section = widgets.VBox([_eyebrow('Create'), create_row])
         
-        # Track editor widgets for enabling/disabling in view mode
-        # We're now only including the recipe/ingredient creation tools and database management tools
-        self.editor_widgets = {
-            'recipe_tools': tools_section,
-            'database_tools': self.database_display,
-            'cost_tools': self.cost_display
-        }
+        # # Track editor widgets for enabling/disabling in view mode
+        # # We're now only including the recipe/ingredient creation tools and database management tools
+        # self.editor_widgets = {
+        #     'recipe_tools': tools_section,
+        #     'database_tools': self.database_display,
+        #     'cost_tools': self.cost_display
+        # }
         
-        # display composition
-        # combined display
+        # # display composition
+        # # combined display
+        # g_files   = widgets.VBox([_eyebrow('Database'), self.database_display])
+        # g_create  = tools_section
+        # g_columns = widgets.VBox([_eyebrow('Columns'), self.hide_toggleVBox])
+        # g_cost    = widgets.VBox([_eyebrow('Cost selection'),
+        #                         widgets.HBox([cost_selection_widget, cost_mult_hbox])])
+        # toolbar = widgets.VBox([
+        #     g_files,
+        #     g_cost,
+        #     g_create,
+        #     g_columns,
+        # ], layout=widgets.Layout(gap='12px'))
+
+        self.toolbar = ToolbarWidget(
+            database_filename=self.excel_filename,
+            file_exists=os.path.exists(self.excel_filename),
+            cost_method='recent',
+            cost_methods=list(self.cost_select_method.keys()),
+            cost_multipliers=list(self.df_widget.cost_multipliers),
+            show_note=('note' not in self.hide_columns),
+            show_conversion=('conversion' not in self.hide_columns),
+            show_menu_price=('menu price' not in self.hide_columns),
+            equ_quant_unit='',
+        )
+
+        # database_display is kept as an alias, not a separate widget —
+        # product_fetcher.py's Shamrock integration locates it inside
+        # self.vbox.children to position a button it injects after it.
+        self.database_display = self.toolbar
+
+        def _reset_to_blank():
+            """Replace the current in-memory database with a fresh, empty one."""
+            blank = CostCalculator()
+            blank.costdf = pd.DataFrame(columns=blank.cost_columns)
+            blank.uni_g  = pd.DataFrame(columns=blank.guide_columns)
+            self.cc.__dict__.update(blank.__dict__)
+            self.allvals = set()
+            self.searchinput.options = ()
+            self.df_widget.all_ingredients = self.allvals
+            self.menubutton_hbox.children = tuple(self._build_menu_buttons())
+
+        def _toolbar_on_msg(widget, content, buffers):
+            t = content.get('type')
+            fname = self.toolbar.database_filename.strip()
+
+            if t == 'reload_database':
+                if os.path.exists(fname):
+                    self.reload_database(fname)
+                    self.toolbar.file_exists = True
+                else:
+                    _reset_to_blank()
+                    self.toolbar.file_exists = False
+
+            elif t == 'write_database':
+                if os.path.exists(fname):
+                    try:
+                        self.cc.write_cc(fname)
+                    except Exception as exc:
+                        self.toolbar.send({'type': 'db_error',
+                                           'message': f"Error writing '{fname}': {exc}"})
+                else:
+                    self.toolbar.send({
+                        'type': 'db_confirm',
+                        'message': f"'{fname}' does not exist. Save current database with this filename?"
+                    })
+
+            elif t == 'confirm_write':
+                try:
+                    self.cc.write_cc(fname)
+                    self.toolbar.file_exists = True
+                except Exception as exc:
+                    self.toolbar.send({'type': 'db_error',
+                                       'message': f"Error writing '{fname}': {exc}"})
+
+            elif t == 'create_recipe':
+                shim = _TextBoxShim(content.get('value', ''))
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    self.create_recipe(shim)
+                msg = buf.getvalue().strip()
+                if msg:
+                    self.toolbar.send({'type': 'create_error', 'target': 'recipe', 'message': msg})
+
+            elif t == 'create_ingredient':
+                shim = _TextBoxShim(content.get('value', ''))
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    self.create_ingredient(shim)
+                msg = buf.getvalue().strip()
+                if msg or shim.style.text_color == 'red':
+                    self.toolbar.send({'type': 'create_error', 'target': 'ingredient',
+                                       'message': msg or 'Invalid entry'})
+
+        self.toolbar.on_msg(_toolbar_on_msg)
+
+        def _toolbar_db_name_change(change):
+            self.toolbar.file_exists = os.path.exists(change['new'].strip())
+        self.toolbar.observe(_toolbar_db_name_change, names='database_filename')
+
+        self.toolbar.observe(self.cost_selector, names='cost_method')
+        self.toolbar.observe(self.set_cost_multipliers, names='cost_multipliers')
+        self.toolbar.observe(self.on_equ_quant_unit_change, names='equ_quant_unit')
+        self.toolbar.observe(lambda ch: self.hide_col(ch, 'note'), names='show_note')
+        self.toolbar.observe(lambda ch: self.hide_col(ch, 'conversion'), names='show_conversion')
+        self.toolbar.observe(lambda ch: self.hide_col(ch, 'menu price'), names='show_menu_price')
+
+        toolbar = self.toolbar
+
         self.vbox = widgets.VBox([
-            self.database_display, 
-            self.cost_display, 
-            tools_section,  # Now includes both recipe and ingredient creation
-            self.hide_toggleVBox, 
-            cost_selection_widget, 
-            cost_mult_hbox, 
-            topdisplay, 
+            theme_widget(),
+            toolbar,
+            topdisplay,
             bottom_display
         ])
+        self.vbox.add_class('mv-app')
         
     def _on_root_mode_changed(self, mode):
         '''Keep Explorer-owned chrome that depends on the root's mode in sync.
@@ -337,7 +469,12 @@ class DataFrameExplorer:
         self.edit_mode = edit
         self.enabled_columns = self.df_widget.enabled_columns
         self.renamebutton.layout.display = 'flex' if edit else 'none'
-        self.rename_dialog.layout.display = 'flex' if edit else 'none'
+        if not edit:
+            # Leaving Edit mode -- close any open edit-only dialogs instead of
+            # forcing them open. (Forcing rename_dialog to 'flex' here on every
+            # Edit-mode entry was the bug behind it popping open unprompted.)
+            self.rename_dialog.layout.display = 'none'
+            self.delete_confirm_dialog.layout.display = 'none'
         self._refresh_rename_button()
 
 
@@ -589,12 +726,14 @@ class DataFrameExplorer:
             self.hide_columns = set(self.hide_columns) - {'equ quant'}
             self.df_widget.equ_quant_unit      = unit_str
             self.df_widget.equ_quant_precision = precision
-            self.equ_quant_input.style.text_color = self.defcolor
         else:
             self.hide_columns = set(self.hide_columns) | {'equ quant'}
             self.df_widget.equ_quant_unit      = None
             self.df_widget.equ_quant_precision = None
-            self.equ_quant_input.style.text_color = 'red' if raw else self.defcolor
+
+        # red only when something was actually typed and it didn't parse —
+        # an empty field isn't an error, same as the old text_color logic
+        self.toolbar.equ_quant_valid = valid or not raw
 
         self.df_widget.hide_columns = self.hide_columns
         if self.df_widget.last_lookup:
@@ -652,6 +791,7 @@ class DataFrameExplorer:
             self.allvals = nicks.union(ingrs)
             self.searchinput.options = tuple(self.allvals)
             self.df_widget.all_ingredients = self.allvals
+            print(f'created recipe "{rname}"')
         else:
             print(f'recipe/ingredient {rname} already exists')
             
@@ -812,6 +952,7 @@ class DataFrameExplorer:
         self.rename_new_name.value = nick
         self.rename_new_name.style.text_color = self.defcolor
         self.duplicate_button.layout.display = 'flex' if is_recipe else 'none'
+        self.delete_recipe_button.layout.display = 'flex' if is_recipe else 'none'
         self.rename_dialog.layout.display = 'flex'
 
     def on_rename_cancel(self, b=None):
@@ -828,10 +969,44 @@ class DataFrameExplorer:
             return
         self._after_rename_or_duplicate(old_name, new_name, renamed=True)
         
+    # def on_delete_confirm_needed(self, nickname, original_index, affected):
+    #     '''Called by DataFrameWidget when deleting the last guide entry for
+    #     `nickname` would also remove it from one or more recipes.'''
+    #     self._delete_pending = (nickname, original_index, affected)
+    #     names = ', '.join(affected)
+    #     plural = 'recipe' if len(affected) == 1 else 'recipes'
+    #     self.delete_confirm_info.value = (
+    #         f'<b style="color:red">⚠ "{nickname}" has no other price entries. '
+    #         f'Deleting this one will fully remove "{nickname}" and take it out of '
+    #         f'{len(affected)} {plural} that use it: {names}. This cannot be undone.</b>'
+    #     )
+    #     self.delete_confirm_dialog.layout.display = 'flex'
+
+    # def on_delete_confirm_yes(self, b=None):
+    #     if self._delete_pending is None:
+    #         return
+    #     nickname, original_index, affected = self._delete_pending
+    #     self.df_widget.confirmed_cascade_delete(nickname, original_index, affected)
+    #     self._delete_pending = None
+    #     self.delete_confirm_dialog.layout.display = 'none'
+
+    #     # nickname no longer exists -- refresh search caches and clear the display
+    #     nicks = set(self.cc.uni_g['nickname'].dropna().unique())
+    #     ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
+    #     self.allvals = nicks.union(ingrs)
+    #     self.searchinput.options = tuple(self.allvals)
+    #     self.df_widget.all_ingredients = self.allvals
+    #     self.searchinput.value = ''
+
+    # def on_delete_confirm_no(self, b=None):
+    #     self._delete_pending = None
+    #     self.delete_confirm_dialog.layout.display = 'none'
+    
     def on_delete_confirm_needed(self, nickname, original_index, affected):
         '''Called by DataFrameWidget when deleting the last guide entry for
         `nickname` would also remove it from one or more recipes.'''
-        self._delete_pending = (nickname, original_index, affected)
+        self._delete_pending = {'kind': 'guide', 'nickname': nickname,
+                                 'original_index': original_index, 'affected': affected}
         names = ', '.join(affected)
         plural = 'recipe' if len(affected) == 1 else 'recipes'
         self.delete_confirm_info.value = (
@@ -841,20 +1016,46 @@ class DataFrameExplorer:
         )
         self.delete_confirm_dialog.layout.display = 'flex'
 
+    def on_delete_recipe_click(self, b=None):
+        '''From the rename/duplicate dialog: show a confirmation before
+        permanently deleting the recipe currently loaded there.'''
+        nickname = self._rename_target
+        if not nickname:
+            return
+        affected = sorted(set(self.cc.get_parents(nickname)) - {'recipe'})
+        msg = f'<b style="color:red">⚠ Permanently delete "{nickname}"?</b> This cannot be undone.'
+        if affected:
+            names = ', '.join(affected)
+            plural = 'recipe' if len(affected) == 1 else 'recipes'
+            msg += (f' It will also be removed from {len(affected)} other {plural} '
+                    f'that use it: {names}.')
+        self.delete_confirm_info.value = msg
+        self._delete_pending = {'kind': 'recipe', 'nickname': nickname}
+        self.rename_dialog.layout.display = 'none'
+        self.delete_confirm_dialog.layout.display = 'flex'
+
     def on_delete_confirm_yes(self, b=None):
         if self._delete_pending is None:
             return
-        nickname, original_index, affected = self._delete_pending
-        self.df_widget.confirmed_cascade_delete(nickname, original_index, affected)
+        pending = self._delete_pending
         self._delete_pending = None
         self.delete_confirm_dialog.layout.display = 'none'
 
-        # nickname no longer exists -- refresh search caches and clear the display
+        if pending['kind'] == 'recipe':
+            self.cc.delete_recipe(pending['nickname'])
+            self.df_widget.clear_display()
+        else:
+            self.df_widget.confirmed_cascade_delete(
+                pending['nickname'], pending['original_index'], pending['affected']
+            )
+
+        # the deleted item no longer exists -- refresh search caches and chrome
         nicks = set(self.cc.uni_g['nickname'].dropna().unique())
         ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
         self.allvals = nicks.union(ingrs)
         self.searchinput.options = tuple(self.allvals)
         self.df_widget.all_ingredients = self.allvals
+        self.menubutton_hbox.children = tuple(self._build_menu_buttons())
         self.searchinput.value = ''
 
     def on_delete_confirm_no(self, b=None):
