@@ -1,6 +1,6 @@
 # menuview
 
-**[Open menuview →](https://atomwrath.github.io/menuview/)**
+**[Open menuview →](https://atomwrath.github.io/menuview/notebooks/index.html?path=menu_view.ipynb)**
 
 A Jupyter-based restaurant cost management application for recipe costing, ingredient price tracking, and order guide processing. Runs entirely in the browser via JupyterLite/Pyodide — no install required. This is just a pre-release demo.
 
