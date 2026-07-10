@@ -6,12 +6,16 @@ from utils import *
 
 class CostCalculator:
     def __init__(self, filename=None, costpicker=None):
-        self.costdf = pd.DataFrame()
-        self.uni_g = pd.DataFrame()
         self.guide_sheet_name = 'unified - guide'
         self.cost_sheet_name = 'menu - cost'
         self.guide_columns = ['supplier', 'description', 'number', 'price', 'unit', 'size', 'brand', 'order', 'nickname', 'note', 'allergen', 'conversion', 'date']
         self.cost_columns = ['item', 'ingredient', 'quantity', 'cost', 'conversion', 'note', 'menu price']
+        # Empty-but-columned, not bare pd.DataFrame(): keeps ['nickname'] /
+        # ['description'] etc. lookups (DataFrameWidget, guide_lookup, ...)
+        # working before any file is loaded -- e.g. when the default xlsx
+        # is missing on startup and main() swallows FileNotFoundError.
+        self.costdf = pd.DataFrame(columns=self.cost_columns)
+        self.uni_g = pd.DataFrame(columns=self.guide_columns)
         self.costdf_order = ('item', 'ingredient', 'quantity', 'equ quant', 
                 'cost', 'cost 3.0x', 'menu price')
         self.uni_g_order = ('nickname',  'price', 'unit', 'size', '$/quant',
