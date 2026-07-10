@@ -329,16 +329,44 @@ class FastCostMixin:
                     stack.append(parent)
         return seen
 
-    # ── cost-method change: the one new UI hook ───────────────────────────
+    # ── cost-method change + bulk-edit invalidation ────────────────────────
+    def _reset_all_costs(self):
+        """Flush every cost-related cache and re-zero costdf['cost'] with the
+        correct dtype in one shot. Shared by change_cost_method (every leaf
+        reprices under the new picker) and invalidate_all_costs (a bulk edit
+        to uni_g/costdf happened outside the normal per-cell path, so there's
+        no single ingredient to hand clear_cost() for targeted invalidation).
+        """
+        self._memo = {}
+        self._leaf_cost = {}
+        self._guide_dirty = True
+        if "cost" in self.costdf.columns:
+            # Full-column reassignment as a real float64 Series -- NOT
+            # `self.costdf['cost'] = 0`, which assigns a plain int and
+            # silently flips the column to int64. Every later per-cell
+            # write-back (_emit) would then hit pandas' "incompatible
+            # dtype" warning/error against that stale int64 column.
+            self.costdf['cost'] = pd.Series(0.0, index=self.costdf.index, dtype='float64')
+
     def change_cost_method(self, new_picker):
         """recent / all / max changed: every leaf reprices, so flush the memo
         and zero the cost column. Lazy refill on next view."""
         self.cost_picker = new_picker
-        self._memo = {}
-        self._leaf_cost = {}                  # every leaf reprices under the new method
-        if "cost" in self.costdf.columns:
-            # Full-column reassignment -- same reasoning as read_from_xlsx.
-            self.costdf['cost'] = pd.Series(0.0, index=self.costdf.index, dtype='float64')
+        self._reset_all_costs()
+
+    def invalidate_all_costs(self):
+        """Force a full recompute on next view, without changing the cost
+        method. Call this after any bulk edit made directly to uni_g /
+        costdf outside the widgets' normal per-cell edit path (e.g. an
+        order guide / confirmation import) -- that path calls clear_cost()
+        with the one ingredient that changed, but a batch import touches
+        many nicknames at once with nothing to hand it. Zeroing
+        costdf['cost'] alone is NOT enough: a recipe whose total was
+        already memoised earlier this session would hit that memo on the
+        next lookup and skip recomputing (and re-emitting) entirely,
+        leaving the zeroed column exactly as-is.
+        """
+        self._reset_all_costs()
 
     # ── structural edits we can catch directly ────────────────────────────
     def removeIngredient(self, item, ingredient):

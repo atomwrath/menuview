@@ -339,6 +339,25 @@ class DataFrameExplorer:
         self.searchinput.options = tuple(self.allvals)
         self.df_widget.all_ingredients = self.allvals
         self.df_widget.refresh_ingredient_options()   # <-- add this line
+
+    def refresh_after_external_update(self):
+        """Re-sync search options, menu buttons, and the currently-displayed
+        grid after something outside the Explorer (e.g. OrderGuideReader)
+        has mutated self.cc in place.
+
+        Deliberately does NOT touch disk -- self.cc is the same object the
+        caller just edited, so a reload-from-file here would discard the
+        very in-memory changes we're trying to surface.
+        """
+        self.refresh_search_options()
+        self.menubutton_hbox.children = tuple(self._build_menu_buttons())
+        if self.df_widget.last_lookup:
+            if self.df_widget.widget_mode == 'Flatten':
+                self.df_widget._render_flattened()
+            else:
+                self.df_widget.lookup_name(self.df_widget.last_lookup)
+                self.df_widget.update_display()
+            self.df_widget.cascade_settings_to_children()
     
     def update_search(self, change):
         '''Respond to searchinput value changes (user typing or trigger_update).

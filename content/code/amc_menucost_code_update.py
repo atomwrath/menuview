@@ -14,12 +14,14 @@ def main():
     except FileNotFoundError:
         pass  # Explorer will show the filename in red; user can reload or write
     
-    # Create the order guide reader with the cost calculator instance
-    order_reader = OrderGuideReader(cc=cc)
-    order_reader.container.add_class('mv-app')
-    
-    # Create and display the explorer
+    # Create the explorer first so the order guide reader can be wired to
+    # its toolbar (for the real current filename) and its grid (to refresh
+    # after prices are updated).
     explorer = DataFrameExplorer(cc=cc)
+
+    # Create the order guide reader with the cost calculator instance
+    order_reader = OrderGuideReader(cc=cc, explorer=explorer)
+    order_reader.container.add_class('mv-app')
     
     # Create a tab layout to switch between explorer and order guide reader
     tab = widgets.Tab()

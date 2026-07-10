@@ -13,9 +13,19 @@ class OrderGuideReader:
     Handles both order guide price lists and order confirmations with different formats.
     """
     
-    def __init__(self, cc=None):
-        """Initialize the reader with an optional CostCalculator instance"""
+    def __init__(self, cc=None, explorer=None):
+        """Initialize the reader with an optional CostCalculator instance.
+
+        explorer, if provided, is the DataFrameExplorer sharing this same cc.
+        It's used for two things: looking up the database's actual current
+        filename (so Save Database writes to whatever's loaded, not a
+        hardcoded default) and refreshing the Explorer's on-screen grid
+        after prices are updated in place -- self.cc is the same object the
+        Explorer holds, but nothing pushes changes to its display on its
+        own.
+        """
         self.cc = cc  # CostCalculator instance
+        self.explorer = explorer
         self.order_data = None  # Processed order guide data
         self.all_found_dates = []
         self.order_date = None  # Date from the order guide
@@ -1147,8 +1157,16 @@ class OrderGuideReader:
                             self.cc.uni_g = pd.concat([self.cc.uni_g, pd.DataFrame([new_row])], ignore_index=True)
                             new_items += 1
                 
-                # Clear all costs to force recalculation
-                if hasattr(self.cc, 'costdf'):
+                # Force a full recompute. Resetting costdf['cost'] to 0
+                # directly isn't enough on its own -- FastCostMixin memoizes
+                # full recipe costs (self._memo) and leaf prices
+                # (self._leaf_cost), and a memo hit skips recomputing (and
+                # re-writing) entirely, leaving a zeroed column exactly as
+                # zero. invalidate_all_costs() flushes those caches too and
+                # zeroes the column as a proper float64 Series.
+                if hasattr(self.cc, 'invalidate_all_costs'):
+                    self.cc.invalidate_all_costs()
+                elif hasattr(self.cc, 'costdf'):
                     self.cc.costdf['cost'] = 0
                 
                 # Report based on file type
@@ -1168,12 +1186,30 @@ class OrderGuideReader:
                 
                 # Enable save button
                 self.save_button.disabled = False
+
+                # self.cc is the same object the Explorer holds, but nothing
+                # else pushes these in-place changes to its on-screen grid --
+                # without this the Explorer keeps showing whatever it had
+                # displayed before the order guide was processed.
+                if self.explorer is not None:
+                    self.explorer.refresh_after_external_update()
                 
             except Exception as e:
                 print(f"Error updating database: {str(e)}")
                 import traceback
                 traceback.print_exc()
     
+    def _current_database_filename(self):
+        """The filename Save Database should write to: whatever's currently
+        loaded in the Explorer's toolbar, or the legacy default if this
+        reader wasn't wired up to an explorer (e.g. the standalone
+        update_from_order_guides.py tool)."""
+        if self.explorer is not None:
+            fname = getattr(self.explorer.toolbar, 'database_filename', '').strip()
+            if fname:
+                return fname
+        return 'amc_menu_database.xlsx'
+
     def save_database(self, button):
         """Save the updated database"""
         if self.cc is None:
@@ -1182,18 +1218,20 @@ class OrderGuideReader:
                 print("No Cost Calculator available to save.")
             return
         
+        fname = self._current_database_filename()
         with self.status_output:
             self.status_output.clear_output()
-            print("Saving database...")
+            print(f"Saving database to '{fname}'...")
             
             try:
-                self.cc.write_cc('amc_menu_database.xlsx')
-                print("Database saved successfully to amc_menu_database.xlsx")
+                self.cc.write_cc(fname)
+                print(f"Database saved successfully to '{fname}'.")
+                if self.explorer is not None:
+                    self.explorer.toolbar.file_exists = True
             except Exception as e:
                 print(f"Error saving database: {str(e)}")
                 import traceback
                 traceback.print_exc()
-    
     def display(self):
         """Display the OrderGuideReader interface"""
         display(self.container)
