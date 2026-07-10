@@ -2287,19 +2287,6 @@ class DataFrameWidget:
             self.search_name(row['nickname'])
         self.update_display()
 
-    # def on_lookup_click(self, button):
-    #     # Retrieve the row from the DataFrame using the button's 'tag' attribute
-    #     row = self.df.loc[button.tag]
-            
-    #     # Update the DataFrame and the grid
-    #     if self.df_type == 'recipe':
-    #         if row['item'] != 'recipe':
-    #             self.trigger(row['ingredient'])
-
-    #     elif self.df_type == 'mentions':
-    #         self.trigger(row['item'])
-
-    #     button.disabled = True
     def on_lookup_click(self, button):
         '''Navigate to the ingredient's own recipe / guide entry.
 

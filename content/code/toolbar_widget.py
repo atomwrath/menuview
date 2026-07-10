@@ -17,6 +17,7 @@ Messages (browser -> kernel), via model.send:
     {type:"reload_database"}
     {type:"write_database"}
     {type:"confirm_write"}                 -- "file doesn't exist, save as?" confirmed
+    {type:"refresh_database_files"}        -- caret clicked open; rescan cwd for .xlsx files
     {type:"create_recipe", value}
     {type:"create_ingredient", value}
 
@@ -26,11 +27,17 @@ Messages (kernel -> browser), via widget.send:
     {type:"create_error", target, message}  -- target: "recipe" | "ingredient"
                                                 small red text under that field
 
-Synced traits (two-way, except file_exists and equ_quant_valid, which are
-kernel-owned and only reflected in the browser):
-    database_filename, file_exists, cost_method, cost_methods,
+Synced traits (two-way, except file_exists, database_files, and
+equ_quant_valid, which are kernel-owned and only reflected in the browser):
+    database_filename, file_exists, database_files, cost_method, cost_methods,
     cost_multipliers, show_note, show_conversion, show_menu_price,
     equ_quant_unit, equ_quant_valid
+
+database_files is the list of .xlsx filenames found in the working directory
+(populated by DataFrameExplorer via utils.get_xlsx_files()); it drives the
+suggestions dropdown attached to the database filename field. The field
+itself stays a free-text input, so typing a name not in the list still
+works for "save as" / new-blank-database.
 """
 
 import anywidget
@@ -40,6 +47,7 @@ import traitlets
 class ToolbarWidget(anywidget.AnyWidget):
     database_filename = traitlets.Unicode('').tag(sync=True)
     file_exists        = traitlets.Bool(True).tag(sync=True)   # kernel sets this; JS only reads it
+    database_files      = traitlets.List(traitlets.Unicode()).tag(sync=True)  # kernel sets this; JS only reads it
 
     cost_method    = traitlets.Unicode('recent').tag(sync=True)
     cost_methods   = traitlets.List(traitlets.Unicode(),
@@ -75,7 +83,7 @@ class ToolbarWidget(anywidget.AnyWidget):
         border-radius: 6px; overflow: hidden;
     }
     .tbw-dbseg input {
-        border: none; padding: 6px 10px; font: inherit; width: 210px;
+        border: none; padding: 6px 10px; font: inherit; width: 190px;
         background: var(--mv-surface, #fff); color: var(--mv-ink, #1c2733);
     }
     .tbw-dbseg input:focus { outline: none; background: var(--mv-accent-soft, #eaf1fe); }
@@ -167,6 +175,19 @@ class ToolbarWidget(anywidget.AnyWidget):
         color: var(--mv-muted, #66727f); font-size: 11.5px; min-height: 14px; margin-top: 2px;
     }
 
+    /* database filename suggestions dropdown */
+    .tbw-pop-body.tbw-dblist {
+        min-width: 240px; max-width: 340px; max-height: 220px; overflow-y: auto; padding: 4px;
+    }
+    .tbw-dbitem {
+        padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tbw-dbitem:hover { background: var(--mv-accent-soft, #eaf1fe); color: var(--mv-accent, #2563eb); }
+    .tbw-dbempty {
+        padding: 6px 8px; color: var(--mv-muted, #66727f); font-size: 12px; white-space: normal;
+    }
+
     /* save-as / error banner */
     .tbw-banner {
         display: none; align-items: center; gap: 10px;
@@ -211,10 +232,14 @@ class ToolbarWidget(anywidget.AnyWidget):
       el.classList.add("tbw-root");
       el.innerHTML = `
         <div class="tbw-bar">
-          <div class="tbw-dbseg">
-            <input type="text" class="tbw-dbfile" title="database file">
-            <button class="tbw-reload" title="reload database">${ICON_RELOAD}</button>
-            <button class="tbw-write" title="write database">${ICON_WRITE}</button>
+          <div class="tbw-pop tbw-dbpop" data-pop="db">
+            <div class="tbw-dbseg">
+              <input type="text" class="tbw-dbfile" title="database file" autocomplete="off" spellcheck="false">
+              <button type="button" class="tbw-btn tbw-dbcaret" title="choose an existing database file">&#9662;</button>
+              <button class="tbw-reload" title="reload database">${ICON_RELOAD}</button>
+              <button class="tbw-write" title="write database">${ICON_WRITE}</button>
+            </div>
+            <div class="tbw-pop-body tbw-dblist"></div>
           </div>
 
           <div class="tbw-sep"></div>
@@ -268,6 +293,9 @@ class ToolbarWidget(anywidget.AnyWidget):
 
       const $ = (sel) => el.querySelector(sel);
       const dbfile        = $(".tbw-dbfile");
+      const dbPop          = $(".tbw-dbpop");
+      const dbCaret        = $(".tbw-dbcaret");
+      const dbList         = $(".tbw-dblist");
       const costSel        = $(".tbw-costmethod");
       const multChips      = $(".tbw-mult-chips");
       const multAdd        = $(".tbw-mult-add");
@@ -437,6 +465,48 @@ class ToolbarWidget(anywidget.AnyWidget):
       });
       document.addEventListener("pointerdown", (e) => {
         if (!e.target.closest(".tbw-pop")) el.querySelectorAll(".tbw-pop.open").forEach(closePop);
+      });
+
+      // ── database file picker: suggestions dropdown over free-text input ─
+      // The list is kept live-rendered even while hidden (cheap, and keeps
+      // the caret-click case simple) -- .tbw-pop-body's display:none does
+      // the actual hiding.
+      const renderDbList = () => {
+        const files = model.get("database_files") || [];
+        const q = dbfile.value.trim().toLowerCase();
+        const filtered = q ? files.filter((f) => f.toLowerCase().includes(q)) : files;
+        dbList.innerHTML = filtered.length
+          ? filtered.map((f) => `<div class="tbw-dbitem" data-file="${esc(f)}">${esc(f)}</div>`).join("")
+          : `<div class="tbw-dbempty">No matching file — keep typing to save as / create a new one</div>`;
+      };
+      renderDbList();
+      model.on("change:database_files", renderDbList);
+      dbfile.addEventListener("input", renderDbList);
+      dbfile.addEventListener("focus", () => {
+        if (!dbPop.classList.contains("open")) {
+          el.querySelectorAll(".tbw-pop.open").forEach(closePop);
+          dbPop.classList.add("open");
+          positionPop(dbPop);
+        }
+      });
+      dbfile.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === "Escape") dbPop.classList.remove("open");
+      });
+      dbList.addEventListener("click", (e) => {
+        const item = e.target.closest(".tbw-dbitem");
+        if (!item) return;
+        dbfile.value = item.dataset.file;
+        model.set("database_filename", dbfile.value);
+        model.save_changes();
+        dbPop.classList.remove("open");
+        dbfile.focus();
+      });
+      // The generic .tbw-pop click handler above already toggled dbPop's
+      // "open" class by the time this fires (listeners on the same element
+      // run in registration order) -- only rescan when the caret is the one
+      // that just opened it, not on the close click.
+      dbCaret.addEventListener("click", () => {
+        if (dbPop.classList.contains("open")) model.send({ type: "refresh_database_files" });
       });
 
       // ── kernel -> browser: errors, save-as confirmation ────────────────
