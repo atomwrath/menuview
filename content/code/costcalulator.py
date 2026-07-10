@@ -689,7 +689,69 @@ class CostCalculator:
                     )
                     myselection = reorder_columns(myselection, self.uni_g_easyorder)
         return myselection
-        
+
+    def guide_display_frame(self, nickname):
+        ''' Full price history for a guide-only ingredient, newest date
+        first, with a '_cost_used' column flagging which rows self.cost_picker
+        is currently selecting for cost calculation.
+
+        Unlike findframe's guide branch (which returns only cost_picker's
+        filtered subset), this returns every entry -- it's for browsing and
+        editing the whole price history, not for computing cost. cost_picker
+        and get_cost_df themselves are untouched, so nothing that computes an
+        actual cost is affected by using this instead of findframe.
+        '''
+        if self.find_nick(nickname).empty:
+            return pd.DataFrame()
+        full_df = self.get_cost_df(nickname)
+        if full_df.empty:
+            return full_df
+        used_index = set(self.cost_picker(full_df)['_guide_index'])
+        full_df = full_df.copy()
+        full_df['_cost_used'] = full_df['_guide_index'].isin(used_index)
+        full_df = full_df.sort_values(by='date', ascending=False, ignore_index=True)
+        full_df['equ size'] = full_df['size'].apply(
+            lambda x: f"{parse_size(x):~}"
+        )
+        if '$/quantity' in full_df.columns and not full_df.empty:
+            full_df['$/quantity'] = self._normalize_dollars_per_quantity(
+                full_df['$/quantity']
+            )
+        return reorder_columns(full_df, self.uni_g_easyorder)
+
+    def _normalize_dollars_per_quantity(self, series):
+        ''' Re-express every value in a raw '$/quantity' column (get_cost_df's
+        unrounded str(price/quant), whose unit varies row to row with each
+        entry's own size/unit) in ONE common unit -- the newest entry's
+        (series.iloc[0], since guide_display_frame sorts newest-first first)
+        -- rounded to 2 decimal places.
+
+        A row that isn't dimensionally convertible to that unit (e.g. priced
+        per-count next to others priced per-pound, with no conversion between
+        them) is left as its original raw string rather than dropped, since
+        that's still real information -- just not one directly comparable to
+        the rest of the column.
+        '''
+        if series.empty:
+            return series
+        target_unit = None
+        try:
+            target_unit = Q_(str(series.iloc[0])).units
+        except Exception:
+            pass   # leave target_unit None -- every row falls back below
+
+        def normalize(v):
+            try:
+                q = Q_(str(v))
+            except Exception:
+                return str(v)   # unparseable -- nothing more we can do with it
+            try:
+                return f"{q.to(target_unit):~.2f}"
+            except Exception:
+                return f"{q:~.2f}"   # not convertible to target_unit -- still
+                                      # round it in its own native unit
+
+        return series.apply(normalize)
     
     def find_mentions(self, iname):
         ''' find recipes that have iname as an ingredient

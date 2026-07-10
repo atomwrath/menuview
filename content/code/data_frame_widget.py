@@ -10,6 +10,11 @@ try:
 except Exception:          # anywidget not installed — fast view silently off
     RecipeGridWidget = None
 
+try:
+    from guide_grid_widget import GuideGridWidget
+except Exception:          # anywidget not installed — fast view silently off
+    GuideGridWidget = None
+
 
 class _FastCellShim:
     '''Stands in for an ipywidgets Text/Combobox/Button when edit handlers
@@ -111,6 +116,8 @@ class DataFrameWidget:
         self.root_trigger = None   # set on children only: the trigger function that
                             # belongs to the top-level (root) display
         self._guide_row_index_map = {}   # display row position -> real uni_g index, for guide pages
+        self._guide_row_used_map = {}    # display row position -> bool, whether cost_picker is
+                                  # currently using that entry for cost calculation
         self.equ_quant_precision = None
         self.equ_quant_unit = None              # target unit for "equ quant" column
         self.scale_factor = None                # current display scale ratio (float|None)
@@ -163,6 +170,12 @@ class DataFrameWidget:
         self._selection_controls = None   # optional extra ipywidgets widget shown above the
                                            # grid (used by the "view selected below" panel for
                                            # its Create/Replace buttons); set before first display
+
+        # One-model HTML grid used for guide (price-entry) display — the
+        # guide-display equivalent of the recipe fast-view fields above.
+        self._fast_guide_grid      = None    # GuideGridWidget instance (created lazily)
+        self._fast_guide_box       = None    # persistent VBox: [delete-confirm row, grid, child_output]
+        self._fast_guide_displayed = False   # True while _fast_guide_box is what's on screen
         
         # inline confirmation for deleting an ingredient's LAST guide entry when
         # that ingredient is used in one or more recipes
@@ -211,11 +224,20 @@ class DataFrameWidget:
 
     def setdf(self, mylookup):
         self.last_lookup = mylookup
-        mydf = self.cc.findframe(
-            mylookup,
-            equ_quant_unit=self.equ_quant_unit,
-            equ_quant_precision=self.equ_quant_precision
-        ).reset_index(drop=True).copy()
+        rentry = self.cc.get_recipe_entry(mylookup)
+        if rentry is not None and not rentry.empty:
+            mydf = self.cc.findframe(
+                mylookup,
+                equ_quant_unit=self.equ_quant_unit,
+                equ_quant_precision=self.equ_quant_precision
+            ).reset_index(drop=True).copy()
+        else:
+            # Guide-only ingredient: show the full price history (not just
+            # the subset cost_picker currently selects for cost calc) so
+            # editing and the "in use" highlight have the complete picture.
+            # cost_picker / get_cost_df / findframe are untouched, so actual
+            # cost calculations elsewhere are unaffected by this.
+            mydf = self.cc.guide_display_frame(mylookup).reset_index(drop=True).copy()
         self.df = mydf
         self._scaled_quantity_full = {}
         self.findtype()
@@ -252,12 +274,15 @@ class DataFrameWidget:
                     self._guide_row_index_map = dict(enumerate(mydf['_guide_index']))
                 else:
                     self._guide_row_index_map = {}
-                mycolumns = [x for x in mydf.columns if x not in ['myconversion', 'mycost', '_guide_index']]
-            else:
-                mycolumns = [x for x in mydf.columns if x not in self.hide_columns]
-            mydf = mydf[mycolumns]
-            self.df = mydf
-            self.update_column_width()
+                # Same idea for '_cost_used' (added by guide_display_frame): a
+                # display-row -> bool map, read by _update_display_fast_guide
+                # to highlight the rows currently feeding cost calculation.
+                if '_cost_used' in mydf.columns:
+                    self._guide_row_used_map = dict(enumerate(mydf['_cost_used']))
+                else:
+                    self._guide_row_used_map = {}
+                mycolumns = [x for x in mydf.columns
+                             if x not in ('myconversion', 'mycost', '_guide_index', '_cost_used')]
             
             
     def update_column_width(self):
@@ -889,6 +914,130 @@ class DataFrameWidget:
             elif action == 'view_below':
                 self._selection_view_below(sel)
         
+    def _update_display_fast_guide(self):
+        '''Render self.df (a 'guide' price-entry list) into a single-model
+        fast grid — the guide-display equivalent of _update_display_fast.
+
+        First call displays a persistent VBox [delete-confirm banner, grid,
+        child_output] into self.output; every later call is pure trait
+        updates on the live widget — no clear_output, no rebuild, no
+        flicker. Unlike the recipe grid there's no header row, add-row, or
+        selection system — every row is a peer price entry with its own
+        Dup/Delete buttons, gated on widget_mode exactly the way create_row
+        gates them (buttons hidden whenever widget_mode == 'View').
+
+        Column widths aren't computed here — GuideGridWidget measures them
+        client-side from the actual cell text it's about to render, which
+        can't drift out of sync with what's on screen the way a
+        separately-computed pixel estimate can.
+
+        self.df is already the full price history sorted newest-first (see
+        setdf's guide branch / CostCalculator.guide_display_frame) — rows
+        currently selected by cost_picker for cost calculation are flagged
+        via _guide_row_used_map and highlighted by the grid.
+        '''
+        edit_mode = (self.widget_mode == 'Edit')
+        cols = list(self.df.columns)
+
+        # Display-only column tweaks: nickname is redundant (it's already
+        # the title-bar heading above the grid) and description reads
+        # better as the leftmost column. self.df itself is untouched, so
+        # this has no effect on editing, cost calc, or the classic grid.
+        # The internal-only columns are stripped by setdf already -- excluded
+        # again here too, so the grid can never show them even if self.df
+        # ever ends up holding them for some other reason.
+        internal_cols = ('mycost', 'myconversion', '_guide_index', '_cost_used')
+        cols = [c for c in cols if c not in internal_cols]
+        if 'nickname' in cols:
+            cols.remove('nickname')
+        if 'description' in cols:
+            cols.remove('description')
+            cols.insert(0, 'description')
+
+        n_rows = len(self.df)
+        conv_errors = getattr(self.cc, 'conversion_errors', set())
+
+        rows = []
+        row_used = []
+        for i in range(n_rows):
+            row = self.df.iloc[i]
+            cells = []
+            for col in cols:
+                val = self._fast_format_value(row[col])
+                # editability: same rule as create_row's is_disabled check
+                # for df_type == 'guide' (no per-column overrides there).
+                editable = edit_mode and (col in self.enabled_columns)
+                cell = {'v': val, 'e': bool(editable), 'k': 't' if editable else 'l'}
+                if (col == 'conversion' and editable
+                        and row.get('nickname', '') in conv_errors):
+                    cell['inv'] = True     # pre-existing missing-conversion flag
+                cells.append(cell)
+            rows.append(cells)
+            row_used.append(bool(self._guide_row_used_map.get(i, False)))
+
+        if self._fast_guide_grid is None:
+            self._fast_guide_grid = GuideGridWidget()
+            self._fast_guide_grid.on_msg(self._on_fast_guide_grid_msg)
+
+            self._fast_guide_box = widgets.VBox(
+                [self._delete_confirm_row, self._fast_guide_grid, self.child_output],
+                layout=widgets.Layout(border='1px solid #ccc',
+                                      border_radius='3px',
+                                      padding='2px 4px', margin='2px 0'),
+            )
+
+        g = self._fast_guide_grid
+        with g.hold_trait_notifications():   # one message batch, one repaint
+            g.columns   = cols
+            g.rows      = rows
+            g.row_used  = row_used
+            g.title     = self.last_lookup
+            g.mode      = self.widget_mode
+
+        if not self._fast_guide_displayed:
+            with self.output:
+                self.output.clear_output(wait=True)
+                display(self._fast_guide_box)
+
+    def _on_fast_guide_grid_msg(self, widget, content, buffers):
+        '''Route browser events from the guide fast grid into the existing
+        handlers — on_duplicate_click / on_delete_click / _apply_cell_edit /
+        set_widget_mode — exactly as _on_fast_grid_msg does for the recipe
+        grid. duplicate/delete only need button.tag (the row index), so the
+        same _FastCellShim used for recipe edits stands in for the button.'''
+        msg_type = content.get('type')
+
+        if msg_type == 'edit':
+            index  = int(content['row'])
+            column = str(content['col'])
+            shim = _FastCellShim()
+            try:
+                self._apply_cell_edit(index, column,
+                                      str(content.get('new', '')), shim)
+            except Exception as exc:
+                print(f'[fast guide grid] edit failed ({column}): {exc}')
+                return
+            if shim.invalid:
+                widget.send({'type': 'cell_invalid', 'row': index, 'col': column})
+
+        elif msg_type == 'duplicate':
+            shim = _FastCellShim()
+            shim.tag = int(content['row'])
+            try:
+                self.on_duplicate_click(shim)
+            except Exception as exc:
+                print(f'[fast guide grid] duplicate failed: {exc}')
+
+        elif msg_type == 'delete':
+            shim = _FastCellShim()
+            shim.tag = int(content['row'])
+            try:
+                self.on_delete_click(shim)
+            except Exception as exc:
+                print(f'[fast guide grid] delete failed: {exc}')
+
+        elif msg_type == 'mode':
+            self.set_widget_mode(content['value'])
             
     # ── Selection actions (cut / copy / paste / view selected) ──
 
@@ -1127,9 +1276,15 @@ class DataFrameWidget:
         # casing is needed here beyond including 'Flatten' in the mode set.)
         if (self.use_fast_view and RecipeGridWidget is not None
                 and self.widget_mode in ('View', 'Edit', 'Flatten') and self.df_type == 'recipe'):
+            self._fast_guide_displayed = False   # leaving guide fast view, if any
             self._update_display_fast()
             return
+        if self.use_fast_view and GuideGridWidget is not None and self.df_type == 'guide':
+            self._fast_displayed = False   # leaving recipe fast view, if any
+            self._update_display_fast_guide()
+            return
         self._fast_displayed = False   # leaving fast view; output gets rebuilt below
+        self._fast_guide_displayed = False
 
         self.progress_bar.layout.visibility = 'visible'
 
@@ -1590,17 +1745,7 @@ class DataFrameWidget:
                 
         # clear cost of each recipe containing ingredient, then recompute it
         def _clear_costs(nickname):
-            mdf = self.cc.find_ingredient(nickname)
-            # Exclude nickname's own recipe header row. It also has
-            # ingredient == nickname (that's just how headers are stored),
-            # but it isn't a use of nickname elsewhere — treating it as one
-            # zeroed the recipe's own cost via item == 'recipe' (not a real
-            # recipe name) and could never recompute it back.
-            mdf = mdf.loc[mdf['item'] != 'recipe']
-            for i, m in mdf.iterrows():
-                self.cc.set_item_ingredient(m['item'], nickname, 'cost', 0)
-                self.cc.clear_cost(m['item'])
-                self.cc.recipe_cost(m['item'])
+            self._clear_ingredient_costs(nickname)
             
         defmatch = ['nickname', 'description', 'size', 'price', 'date', 'supplier']
         oldval = self.df.iloc[index][column]
@@ -1970,6 +2115,27 @@ class DataFrameWidget:
                 self.update_display()
             self._navigating_back = False
                     
+    def _clear_ingredient_costs(self, nickname):
+        '''Zero and recompute the cost of every recipe line that uses
+        `nickname` as an ingredient.
+
+        recipe_cost() is memoized (see FastCostMixin._full_recipe_cost) --
+        calling it again after a guide edit/duplicate/delete just returns
+        the still-cached value unless clear_cost() has first dropped it from
+        the memo. Call this right after mutating uni_g, before setdf/
+        update_display, so a stale cost never lingers in self.cc.costdf or
+        in a parent recipe widget's display.
+        '''
+        mdf = self.cc.find_ingredient(nickname)
+        # Exclude nickname's own recipe header row (item == 'recipe') --
+        # see _apply_cell_edit's identical exclusion for why: it isn't a use
+        # of nickname elsewhere, and zeroing it would target a bogus item.
+        mdf = mdf.loc[mdf['item'] != 'recipe']
+        for i, m in mdf.iterrows():
+            self.cc.set_item_ingredient(m['item'], nickname, 'cost', 0)
+            self.cc.clear_cost(m['item'])
+            self.cc.recipe_cost(m['item'])
+
     def on_duplicate_click(self, button):
         row = self.df.loc[button.tag]
         newdate = pd.to_datetime('today').strftime('%Y-%m-%d')
@@ -1981,11 +2147,7 @@ class DataFrameWidget:
             newdf = pd.DataFrame([newrow])
             self.cc.uni_g = pd.concat([self.cc.uni_g, newdf], ignore_index=True)
 
-            # clear cost of each recipe containing ingredient
-            mdf = self.cc.find_ingredient(row['nickname'])
-            for i,m in mdf.iterrows():
-                self.cc.set_item_ingredient(m['item'], row['nickname'], 'cost', 0)
-                self.cc.clear_cost(m['item'])
+            self._clear_ingredient_costs(row['nickname'])
 
             self.setdf(row['nickname'])
             self.update_display()
@@ -2037,6 +2199,11 @@ class DataFrameWidget:
             nicks = set(self.cc.uni_g['nickname'].dropna().unique())
             ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
             self.all_ingredients = nicks.union(ingrs)
+
+        # Deleting a price entry can change which dates cost_picker selects
+        # for the ones that remain -- without this, a parent recipe widget's
+        # refresh just re-reads the still-cached (now stale) cost.
+        self._clear_ingredient_costs(nickname)
 
         if self.guide_changed_callback is not None:
             self.guide_changed_callback()
