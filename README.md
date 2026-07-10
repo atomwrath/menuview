@@ -1,37 +1,33 @@
-# JupyterLite Demo 2
+# menuview
 
-[![lite-badge](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://jupyterlite.github.io/demo)
+**[Open menuview →](https://atomwrath.github.io/menuview/notebooks/index.html?path=menu_view.ipynb)**
 
-JupyterLite deployed as a static site to GitHub Pages, for demo purposes.
+A Jupyter-based restaurant cost management application for recipe costing, ingredient price tracking, and order guide processing. Runs entirely in the browser via JupyterLite/Pyodide — no install required. This is just a pre-release demo.
 
-## ✨ Try it in your browser ✨
+## What it does
 
-➡️ **https://jupyterlite.github.io/demo**
+- **Recipe costing** — build recipes from ingredients and track their cost as prices change
+- **Ingredient price tracking** — maintain a price history per ingredient across suppliers
+- **Order guide processing** — import supplier order confirmations to keep prices current
+- **Fast, interactive grids** — custom anywidget-based grid views for recipes and order guides, built for large datasets (thousands of rows) without the performance overhead of per-cell widgets
 
-![github-pages](https://user-images.githubusercontent.com/591645/120649478-18258400-c47d-11eb-80e5-185e52ff2702.gif)
+## Running it
 
-## Requirements
+The app is deployed via GitHub Pages and runs in-browser using JupyterLite, so the link above is all you need — just click and go.
 
-JupyterLite is being tested against modern web browsers:
+To run it locally in JupyterLab Desktop instead, clone the repo and open `menu_view.ipynb`.
 
-- Firefox 90+
-- Chromium 89+
+## Project structure
 
-## Deploy your JupyterLite website on GitHub Pages
+| File | Purpose |
+|---|---|
+| `costcalulator.py` | Core cost calculation backend (`CostCalculator`, `FastCostMixin`) |
+| `data_frame_widget.py` / `data_frame_explorer.py` | Grid display and UI orchestration |
+| `recipe_grid_widget.py` / `guide_grid_widget.py` | Fast anywidget-based grid renderers |
+| `order_guide_reader.py` | Supplier order confirmation processing |
+| `menuview_theme.py` | Shared UI theme (light/dark) |
+| `fast_cost.py`, `utils.py`, `menu_display_widget.py` | Supporting logic and display components |
 
-Check out the guide on the JupyterLite documentation: https://jupyterlite.readthedocs.io/en/latest/quickstart/deploy.html
+## Tech stack
 
-## Further Information and Updates
-
-For more info, keep an eye on the JupyterLite documentation:
-
-- How-to Guides: https://jupyterlite.readthedocs.io/en/latest/howto/index.html
-- Reference: https://jupyterlite.readthedocs.io/en/latest/reference/index.html
-
-This template provides the Pyodide kernel (`jupyterlite-pyodide-kernel`), the JavaScript kernel (`jupyterlite-javascript-kernel`), and the p5 kernel (`jupyterlite-p5-kernel`), along with other
-optional utilities and extensions to make the JupyterLite experience more enjoyable. See the
-[`requirements.txt` file](requirements.txt) for a list of all the dependencies provided.
-
-For a template based on the Xeus kernel, see the [`jupyterlite/xeus-python-demo` repository](https://github.com/jupyterlite/xeus-python-demo)
-
-
+Python, pandas, and [anywidget](https://anywidget.dev/) for the frontend widgets, running on both JupyterLab Desktop and JupyterLite (Pyodide/WebAssembly) so the same notebook works locally and as a static, in-browser web app.
