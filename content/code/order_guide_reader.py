@@ -1,4 +1,5 @@
 import os
+import csv
 import pandas as pd
 import ipywidgets as widgets
 from IPython.display import display, clear_output
@@ -9,8 +10,11 @@ from utils import _try_parse_size, Q_, parse_unit_conversion, quantity_cost_and_
 
 class OrderGuideReader:
     """
-    A class to read order guide XLS files and process them for use in the menu cost calculator.
-    Handles both order guide price lists and order confirmations with different formats.
+    A class to read order guide files (.xls, .xlsx, or .csv) and process
+    them for use in the menu cost calculator. Handles order guide price
+    lists, order confirmations, FreshPoint confirmations, and plain
+    item/price-list exports (no order quantities, no filename convention)
+    with different formats.
     """
     
     def __init__(self, cc=None, explorer=None):
@@ -151,16 +155,16 @@ class OrderGuideReader:
             self.date_picker.value = change['new']
     
     def get_order_files(self):
-        """Get a list of XLS files in the orders directory"""
+        """Get a list of XLS/XLSX/CSV files in the orders directory"""
         orders_dir = 'orders'
         
         # Create the directory if it doesn't exist
         if not os.path.exists(orders_dir):
             os.makedirs(orders_dir)
             
-        # Get all XLS and XLSX files
+        # Get all XLS, XLSX, and CSV files
         files = [f for f in os.listdir(orders_dir) 
-                if f.lower().endswith(('.xls', '.xlsx'))]
+                if f.lower().endswith(('.xls', '.xlsx', '.csv'))]
         
         # Add directory prefix
         file_paths = [os.path.join(orders_dir, f) for f in files]
@@ -175,8 +179,16 @@ class OrderGuideReader:
             self.status_output.clear_output()
             print("File list refreshed.")
     
-    def determine_file_type(self, filename):
-        """Determine the type of file based on the filename"""
+    def determine_file_type(self, filename, df_raw=None):
+        """Determine the type of file. The filename's own naming
+        convention is checked first (fastest, and how every file has been
+        named so far); if that's inconclusive (a generic export name) and
+        the file's own raw contents are available, fall back to sniffing
+        its header row: an 'Item#' (no space) column with no order-
+        quantity column alongside it is the same convention FreshPoint's
+        confirmations use, minus the quantities -- a plain price-list/
+        catalog export rather than a confirmed order.
+        """
         filename_lower = filename.lower()
         if 'fporder' in filename_lower or 'freshpoint' in filename_lower:
             return 'freshpoint_confirmation'
@@ -184,9 +196,20 @@ class OrderGuideReader:
             return 'confirmation'
         elif 'order-guide' in filename_lower or 'orderguidepricelist' in filename_lower:
             return 'guide'
-        else:
-            # Try to guess based on the file content
-            return None
+
+        if df_raw is not None:
+            nospace_mask = df_raw.apply(
+                lambda row: row.astype(str).str.contains(r'\bItem#', case=False, regex=True).any(),
+                axis=1)
+            if nospace_mask.any():
+                header_row = df_raw.loc[nospace_mask.idxmax()].astype(str)
+                has_qty = header_row.str.contains(
+                    r'^\s*(?:Qty|Quantity|Ship Qty|Ordered Qty)\s*$', case=False, regex=True).any()
+                if not has_qty:
+                    return 'item_pricelist'
+
+        # Try to guess based on the file content
+        return None
     
     def normalize_product_number(self, number):
         """
@@ -242,7 +265,9 @@ class OrderGuideReader:
         with self.status_output:
             self.status_output.clear_output()
             
-            # Determine file type
+            # Determine file type from the filename alone, for now -- a
+            # generically-named file (no naming convention to go on) isn't
+            # resolved until read_order_file below can sniff its contents.
             self.file_type = self.determine_file_type(selected_file)
             
             if self.file_type == 'guide':
@@ -252,7 +277,7 @@ class OrderGuideReader:
             elif self.file_type == 'freshpoint_confirmation':
                 print(f"Processing FreshPoint Order Confirmation: {os.path.basename(selected_file)}...")
             else:
-                print(f"Processing file (unknown type): {os.path.basename(selected_file)}...")
+                print(f"Processing file: {os.path.basename(selected_file)}...")
             
             try:
                 # Process the order file
@@ -261,6 +286,19 @@ class OrderGuideReader:
                 # from the source spreadsheet) before counting/reporting/flagging.
                 self.order_data = self._drop_blank_rows(self.order_data)
                 self.update_button.disabled = False
+
+                # self.file_type may have just been resolved by content-
+                # sniffing inside read_order_file (a generically-named file
+                # gets no type from the filename alone) -- confirm what was
+                # actually detected, since it's not always what was
+                # printed above.
+                type_labels = {
+                    'guide': 'Order Guide Price List',
+                    'confirmation': 'Order Confirmation',
+                    'freshpoint_confirmation': 'FreshPoint Order Confirmation',
+                    'item_pricelist': 'Item Price List (no order quantities)',
+                }
+                print(f"Detected type: {type_labels.get(self.file_type, 'unknown -- treated as a price guide')}")
                 
                 # Update date picker with the found date
                 self.date_picker.value = datetime.strptime(self.order_date, '%Y-%m-%d')
@@ -742,28 +780,87 @@ class OrderGuideReader:
         with self.status_output:
             print(f"Applied {applied} size/price correction(s).")
     
+    def _read_csv_ragged(self, file_path, header=None):
+        """pandas.read_csv refuses a file where rows have different field
+        counts, but a real order-guide CSV -- like its Excel counterpart --
+        typically starts with short preamble/title rows (a company name, an
+        "as of" date) before the real, wider header+data rows, and errors
+        out on the mismatch. Read it with the stdlib csv module instead,
+        which tolerates that, then pad every row out to the widest row's
+        length (NaN-filling short and blank cells) so the result is a plain
+        rectangular grid -- same shape pd.read_excel would give, so every
+        existing header-row-detection / date-scanning / column-mapping call
+        downstream works completely unmodified either way.
+        utf-8-sig handles a CSV saved from Excel on Windows, which commonly
+        prefixes the file with a UTF-8 byte-order mark; it's a no-op for a
+        plain UTF-8 file that doesn't have one. newline='' hands the file
+        to csv.reader raw so it -- not TextIOWrapper -- is what interprets
+        the \\r\\n line endings those same Windows exports usually have.
+        """
+        with open(file_path, 'r', encoding='utf-8-sig', newline='') as f:
+            rows = list(csv.reader(f))
+        width = max((len(r) for r in rows), default=0)
+        rows = [[(None if (c is None or c == '') else c)
+                 for c in (r + [None] * (width - len(r)))] for r in rows]
+        df = pd.DataFrame(rows)
+        if header is not None:
+            df.columns = df.iloc[header]
+            df.columns.name = None
+            df = df.iloc[header + 1:].reset_index(drop=True)
+        return df
+
+    def _read_raw(self, file_path, header=None):
+        """Read a price-list/confirmation file into a DataFrame -- csv or
+        excel, dispatched on the file extension. This is the only
+        format-aware code in the class; everything downstream (header-row
+        detection, column mapping, date scanning) works on the resulting
+        DataFrame the same way regardless of which format it came from.
+        """
+        if str(file_path).lower().endswith('.csv'):
+            return self._read_csv_ragged(file_path, header=header)
+        return pd.read_excel(file_path, header=header)
+
+    def _find_header_row(self, df_raw):
+        """Row index of the first row that looks like a column-header row
+        -- contains 'Item #', 'Item#', 'Product #', or 'Product#' (space
+        optional, case-insensitive). Shared by all four process_* methods
+        so every one of them tolerates either header-naming convention,
+        not just whichever style that particular supplier happened to use
+        when this method was first written.
+        """
+        mask = df_raw.apply(
+            lambda row: row.astype(str).str.contains(r'Item\s*#|Product\s*#', case=False, regex=True).any(),
+            axis=1)
+        if not mask.any():
+            raise ValueError("Could not find header row with 'Product #' or 'Item #'")
+        return df_raw.loc[mask].index[0]
+
     def read_order_file(self, file_path):
         """
-        Read and process an order file (either guide or confirmation)
+        Read and process an order file (guide, confirmation, or a plain
+        item/price-list csv)
         
         Parameters:
-        file_path (str): Path to the XLS file
+        file_path (str): Path to the file (.xls, .xlsx, or .csv)
         
         Returns:
         pd.DataFrame: Processed order data
         """
-        # Determine the file type if not already set
+        # Read the entire file without specifying headers -- needed before
+        # the type is known for certain, since content-sniffing (used when
+        # the filename doesn't match a known naming convention) reads it.
+        df_raw = self._read_raw(file_path, header=None)
+
         if not self.file_type:
-            self.file_type = self.determine_file_type(file_path)
-        
-        # Read the entire Excel file without specifying headers
-        df_raw = pd.read_excel(file_path, header=None)
+            self.file_type = self.determine_file_type(file_path, df_raw)
         
         # Process based on file type
         if self.file_type == 'confirmation':
             return self.process_order_confirmation(df_raw, file_path)
         elif self.file_type == 'freshpoint_confirmation':
             return self.process_freshpoint_confirmation(df_raw, file_path)
+        elif self.file_type == 'item_pricelist':
+            return self.process_item_price_list(df_raw, file_path)
         else:
             # Default to guide processing
             return self.process_order_guide(df_raw, file_path)
@@ -774,16 +871,10 @@ class OrderGuideReader:
         self.order_date, self.all_found_dates = self.find_all_dates_in_data(df_raw)
         
         # Look for header row based on Product # or Item #
-        try:
-            header_row_index = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Product #').any(), axis=1)].index[0]
-        except IndexError:
-            try:
-                header_row_index = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Item #').any(), axis=1)].index[0]
-            except IndexError:
-                raise ValueError("Could not find header row with 'Product #' or 'Item #'")
+        header_row_index = self._find_header_row(df_raw)
         
-        # Re-read the Excel file starting from the header row
-        df = pd.read_excel(file_path, header=header_row_index)
+        # Re-read the file starting from the header row
+        df = self._read_raw(file_path, header=header_row_index)
         
         # Remove columns without a header value
         df = df.dropna(axis=1, how='all')
@@ -792,9 +883,13 @@ class OrderGuideReader:
         columnmap = {
             'Product #': 'number', 
             'Item #': 'number',
+            'Item#': 'number',
+            'Product#': 'number',
             'Description': 'description', 
+            'Product': 'description',
             'Pack': 'size', 
             'Pack Size': 'size',
+            'Size': 'size',
             'Brand': 'brand', 
             'Ship Qty': 'order',
             'Quantity': 'order',
@@ -848,13 +943,10 @@ class OrderGuideReader:
         self.order_date, self.all_found_dates = self.find_all_dates_in_data(df_raw)
         
         # Find the header row - look for 'Item#' in FreshPoint format
-        try:
-            header_row_index = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Item#', case=False).any(), axis=1)].index[0]
-        except IndexError:
-            raise ValueError("Could not find header row with 'Item#' in FreshPoint confirmation")
+        header_row_index = self._find_header_row(df_raw)
         
-        # Re-read the Excel file starting from the header row
-        df = pd.read_excel(file_path, header=header_row_index)
+        # Re-read the file starting from the header row
+        df = self._read_raw(file_path, header=header_row_index)
         
         # Remove rows after "Order Summary" which marks the end of items
         if 'Item#' in df.columns:
@@ -925,18 +1017,11 @@ class OrderGuideReader:
         # Find the date in the file
         self.order_date, self.all_found_dates = self.find_all_dates_in_data(df_raw)
         
-        # Identify the row containing 'Product #'
-        try:
-            header_row_index = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Product #').any(), axis=1)].index[0]
-        except IndexError:
-            # Try alternative header names
-            try:
-                header_row_index = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Item #').any(), axis=1)].index[0]
-            except IndexError:
-                raise ValueError("Could not find header row with 'Product #' or 'Item #'")
+        # Identify the header row (Product # / Item #, space optional)
+        header_row_index = self._find_header_row(df_raw)
         
-        # Re-read the Excel file starting from the header row
-        df = pd.read_excel(file_path, header=header_row_index)
+        # Re-read the file starting from the header row
+        df = self._read_raw(file_path, header=header_row_index)
         
         # Remove columns without a header value
         df = df.dropna(axis=1, how='all')
@@ -945,9 +1030,13 @@ class OrderGuideReader:
         columnmap = {
             'Product #': 'number', 
             'Item #': 'number',
+            'Item#': 'number',
+            'Product#': 'number',
             'Description': 'description', 
+            'Product': 'description',
             'Pack': 'size', 
             'Pack Size': 'size',
+            'Size': 'size',
             'Brand': 'brand', 
             'CWT': 'LB', 
             'Kosher Indicator': 'kosher', 
@@ -994,6 +1083,82 @@ class OrderGuideReader:
         # Remove temporary column
         df = df.drop(columns=['number_normalized'])
         
+        return df
+
+    def process_item_price_list(self, df_raw, file_path):
+        """Process a plain item/price-list export: just Item#/Product/
+        Size/Price columns, no order quantities, and often no date
+        anywhere in the file (a straight price catalog, not an order or
+        confirmation) -- content-sniffed in determine_file_type when the
+        filename itself gives no hint (e.g. a generic export name).
+
+        Shares FreshPoint confirmation's header convention ('Item#', no
+        space) and size cleanup (trailing case/pack codes like 'BG'/'CS'/
+        'FL', non-breaking spaces), since every file seen in this shape so
+        far has used the same formatting -- and defaults to supplier 'FP'
+        on that same basis. Correct the supplier in the Explorer afterward
+        if a particular file turns out to be from someone else; it's a
+        per-row column like any other guide entry.
+        """
+        # Find a date in the file, if there is one -- these price-list
+        # exports often don't carry one at all, in which case order_date
+        # falls back to today and the "found dates" dropdown just has
+        # nothing to offer, but the date picker itself is still right
+        # there to set one manually before Update Prices.
+        self.order_date, self.all_found_dates = self.find_all_dates_in_data(df_raw)
+
+        header_row_index = self._find_header_row(df_raw)
+        df = self._read_raw(file_path, header=header_row_index)
+
+        # Remove columns without a header value and fully-empty rows
+        df = df.dropna(axis=1, how='all')
+        df = df.dropna(axis=0, how='all')
+
+        # Map column names
+        columnmap = {
+            'Item#': 'number',
+            'Product': 'description',
+            'Size': 'size',
+            'Price': 'price',
+        }
+        mymap = {key: value for key, value in columnmap.items() if key in df.columns}
+        df = df.rename(columns=mymap)
+
+        # Remove rows where number is NaN (not actual items -- e.g. the
+        # trailing blank column this format's trailing comma produces)
+        if 'number' in df.columns:
+            df = df[df['number'].notna()]
+
+        # Clean up the size column the same way FreshPoint confirmations do:
+        # strip non-breaking spaces and trailing case/pack codes (BG/CS/FL/BX/...)
+        if 'size' in df.columns:
+            df['size'] = df['size'].astype(str).str.replace('\xa0', ' ').str.strip()
+            df['size'] = df['size'].str.replace(r'\s+[A-Z]{2,3}\*?$', '', regex=True)
+
+        # Normalize product numbers and prices
+        df['number_normalized'] = df['number'].apply(self.normalize_product_number)
+        if 'price' in df.columns:
+            df['price'] = df['price'].apply(self.normalize_price)
+
+        # Assign nicknames if we have a cost calculator instance
+        if self.cc is not None and hasattr(self.cc, 'uni_g'):
+            self.assign_nicknames_and_metadata(df)
+        else:
+            df['nickname'] = None
+            df['allergen'] = ''
+            df['conversion'] = ''
+
+        # Plain price list -- no order quantities in this format
+        df['order'] = 0
+        df['supplier'] = 'FP'
+        df['unit'] = 'ea'
+        df['brand'] = ''
+        df['note'] = ''
+        df['date'] = self.order_date if self.order_date else datetime.now().strftime('%Y-%m-%d')
+
+        # Remove temporary column
+        df = df.drop(columns=['number_normalized'])
+
         return df
     
     def assign_nicknames_and_metadata(self, df):

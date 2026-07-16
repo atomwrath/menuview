@@ -5,6 +5,7 @@ from IPython.display import display
 from costcalulator import CostCalculator
 from data_frame_explorer import DataFrameExplorer
 from order_guide_reader import OrderGuideReader  # Import the new class
+from order_creator import OrderCreator
 
 def main():
     # Initialize the cost calculator with the database
@@ -23,11 +24,17 @@ def main():
     order_reader = OrderGuideReader(cc=cc, explorer=explorer)
     order_reader.container.add_class('mv-app')
     
-    # Create a tab layout to switch between explorer and order guide reader
+    # Create the order creator (Create Order tab)
+    order_creator = OrderCreator(cc=cc, explorer=explorer)
+    order_creator.container.add_class('mv-app')
+
+    # Create a tab layout: explorer / order guide reader / order creator
     tab = widgets.Tab()
-    tab.children = [explorer.vbox, order_reader.container]
+    tab.children = [explorer.vbox, order_reader.container,
+                    order_creator.container]
     tab.set_title(0, 'Menu Explorer')
     tab.set_title(1, 'Order Guide Reader')
+    tab.set_title(2, 'Create Order')
     tab.add_class('mv-tabs')
     
     # Display the tabbed interface
