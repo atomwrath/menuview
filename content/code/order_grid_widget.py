@@ -413,8 +413,8 @@ class OrderGridWidget(anywidget.AnyWidget):
       };
 
       const optCost = (o) => {
-        const price = Number(String(o.price ?? "").replace(/^\\$/, ""));
-        return isFinite(price) ? num0(o.quant) * price : 0;
+        const casePrice = Number(String(o.case_price ?? o.price ?? "").replace(/^\\$/, ""));
+        return isFinite(casePrice) ? num0(o.quant) * casePrice : 0;
       };
 
       const collapsedSummary = (row) => {
@@ -452,8 +452,9 @@ class OrderGridWidget(anywidget.AnyWidget):
             if (q <= 0) continue;
             const t = totals[o.supplier] || (totals[o.supplier] = { units: 0, cost: 0 });
             t.units += q;
-            const price = Number(String(o.price ?? "").replace(/^\\$/, ""));
-            if (isFinite(price)) t.cost += q * price;
+            const casePrice = Number(String(o.case_price ?? o.price ??
+            "").replace(/^\\$/, ""));
+            if (isFinite(casePrice)) t.cost += q * casePrice;
           }
         }
         return totals;

@@ -566,6 +566,58 @@ class OrderGuideReader:
                 conversions.append(c)
         return conversions
 
+    def _matching_existing_rows(self, row):
+        ''' This nickname's existing uni_g entries that are actually the
+            SAME physical item as `row` -- not just anything sharing its
+            nickname, which can cover several distinct products (different
+            suppliers, different pack sizes) tracked under one shared name.
+            Narrows to the same supplier, then to the same product number
+            (normalized the same way nicknames get assigned, via
+            normalize_product_number) when `row` has one, or to an exact
+            (case-insensitive) description match when it doesn't.
+        '''
+        nickname = row.get('nickname')
+        if self.cc is None or pd.isna(nickname) or nickname == '':
+            return pd.DataFrame()
+
+        uni_g = self.cc.uni_g
+        supplier = row.get('supplier')
+        supplier_norm = str(supplier).strip().lower() if pd.notna(supplier) else ''
+        candidates = uni_g.loc[
+            (uni_g['nickname'] == nickname) &
+            (uni_g['supplier'].astype(str).str.strip().str.lower() == supplier_norm)
+        ]
+        if candidates.empty:
+            return candidates
+
+        number = row.get('number')
+        has_number = pd.notna(number) and str(number).strip() not in ('', 'nan')
+        if has_number:
+            norm_num = self.normalize_product_number(number)
+            return candidates[candidates['number'].apply(self.normalize_product_number) == norm_num]
+
+        description = row.get('description')
+        if pd.isna(description) or str(description).strip() == '':
+            return candidates.iloc[0:0]
+        desc_norm = str(description).strip().lower()
+        return candidates[candidates['description'].astype(str).str.strip().str.lower() == desc_norm]
+
+    def _previous_good_size(self, existing):
+        """Most recent size, among this nickname's existing price-guide
+        entries, that actually parses as a mass/volume/count quantity --
+        not necessarily the single latest entry, in case that one also
+        carries a bad size forward. Returns None if nothing on file parses.
+        """
+        if existing is None or existing.empty or 'size' not in existing.columns:
+            return None
+        for _, r in existing.sort_values('date', ascending=False).iterrows():
+            size_val = r.get('size')
+            if pd.isna(size_val):
+                continue
+            if _try_parse_size(str(size_val)) is not None:
+                return str(size_val)
+        return None
+
     def _flag_size_issues(self, df):
         ''' Return {idx: {'reason', 'new_rate', 'old_rate'}} (rates are pint
             Quantities or None) for rows whose size/price look suspicious:
@@ -587,14 +639,19 @@ class OrderGuideReader:
             existing = None
             old_rate = None
             if self.cc is not None and pd.notna(nickname) and nickname != '':
-                existing = self.cc.uni_g.loc[self.cc.uni_g['nickname'] == nickname]
+                existing = self._matching_existing_rows(row)
                 if not existing.empty:
                     recent = existing.sort_values('date', ascending=False).iloc[0]
                     old_rate = self._rate_for_row(recent)
 
             q = _try_parse_size(str(size)) if pd.notna(size) else None
             if q is None or q.m == 0:
-                flagged[idx] = {'reason': 'unknown/unparseable size', 'new_rate': None, 'old_rate': old_rate}
+                flagged[idx] = {
+                    'reason': 'unknown/unparseable size',
+                    'new_rate': None,
+                    'old_rate': old_rate,
+                    'suggested_size': self._previous_good_size(existing),
+                }
                 continue
 
             new_rate = self._rate_for_row(row)
@@ -618,6 +675,7 @@ class OrderGuideReader:
                     'reason': f'$/qty is {ratio:.1f}x the last known price for "{nickname}"',
                     'new_rate': new_rate,
                     'old_rate': old_rate,
+                    'suggested_size': self._previous_good_size(existing),
                 }
 
         return flagged
@@ -655,9 +713,12 @@ class OrderGuideReader:
             widgets.HTML(value=(
                 "<h4>Review Sizes</h4>"
                 "<p>These items have a size that couldn't be read, or a price that "
-                "looks far off (more than 4x) from the last known price. Correct "
-                "the size and/or price below if needed -- the $/quantity comparison "
-                "updates as you edit -- then click Apply Corrections.</p>"
+                "looks far off (more than 4x) from the last known price. Where a "
+                "size couldn't be read at all, it's been pre-filled below with the "
+                "most recent parseable size on file for that item — still just a "
+                "suggestion, so double-check it. Correct the size and/or price "
+                "below if needed -- the $/quantity comparison updates as you edit "
+                "-- then click Apply Corrections.</p>"
             ))
         ]
         self.size_review_widgets = {}
@@ -681,30 +742,60 @@ class OrderGuideReader:
             old_rate = info['old_rate']
             conversions = []
             if self.cc is not None and pd.notna(nickname) and nickname != '':
-                existing = self.cc.uni_g.loc[self.cc.uni_g['nickname'] == nickname]
+                existing = self._matching_existing_rows(row)
                 if not existing.empty:
                     conversions = self._nickname_conversions(row, existing)
 
+            current_size = str(row['size']) if pd.notna(row['size']) else ''
+            suggested_size = info.get('suggested_size')
+            size_is_bad = _try_parse_size(current_size) is None
+
+            # When this row's own size doesn't parse at all, seed the input
+            # with the most recent size on file for the same nickname that
+            # DID parse -- a far better starting point than the garbled
+            # value, though it's still just a suggestion the user reviews/
+            # edits/applies below like any other correction. A size that
+            # already parses is left as typed -- the previous size is only
+            # noted in the reason text as a hint, not substituted in, since
+            # a parseable-but-suspicious size might just be a genuine change.
+            reason_text = info['reason']
+            if size_is_bad and suggested_size:
+                prefill_size = suggested_size
+                reason_text += f' — size auto-filled from a previous entry (was: "{current_size}")'
+            else:
+                prefill_size = current_size
+                if suggested_size and suggested_size != current_size:
+                    reason_text += f' (previous size on file: "{suggested_size}")'
+
             size_input = widgets.Text(
-                value=str(row['size']) if pd.notna(row['size']) else '',
+                value=prefill_size,
                 placeholder='e.g. 6/10 oz',
                 continuous_update=False,
                 layout=widgets.Layout(width='120px')
             )
+            if size_is_bad and suggested_size:
+                size_input.layout.border = '2px solid #0a7d32'
+
             price_input = widgets.Text(
                 value=str(row['price']) if pd.notna(row['price']) else '',
                 placeholder='price',
                 continuous_update=False,
                 layout=widgets.Layout(width='80px')
             )
+
+            # Rate shown on first render reflects whatever's actually in the
+            # boxes right now (including any auto-fill above), not the stale
+            # info['new_rate'] computed from the row's original, unusable size.
+            initial_pseudo_row = {'size': size_input.value, 'price': price_input.value, 'unit': unit}
+            initial_new_rate = self._rate_for_row(initial_pseudo_row)
             rate_display = widgets.HTML(
                 value=f"<span style='color:inherit'>recent: {self._format_rate(old_rate)} "
-                      f"&rarr; new: {self._format_rate(info['new_rate'])}</span>"
+                      f"&rarr; new: {self._format_rate(initial_new_rate)}</span>"
             )
 
             row_widget = widgets.HBox([
                 widgets.HTML(
-                    value=f"<b>{description}</b> (#{product_num}) &mdash; {info['reason']}",
+                    value=f"<b>{description}</b> (#{product_num}) &mdash; {reason_text}",
                     layout=widgets.Layout(width='420px', overflow='hidden')
                 ),
                 widgets.Label(value='size:'),
@@ -722,8 +813,10 @@ class OrderGuideReader:
                 rate_w.value = (f"<span style='color:inherit'>recent: {self._format_rate(old_rate)} "
                                  f"&rarr; new: {self._format_rate(new_rate)}</span>")
                 # Any further edit invalidates a previous "applied" checkmark
-                # until Apply Corrections is clicked again.
+                # until Apply Corrections is clicked again, and clears the
+                # auto-fill highlight since the user's now in control of the value.
                 row_w.layout.border = ''
+                size_w.layout.border = ''
 
             size_input.observe(_recompute, names='value')
             price_input.observe(_recompute, names='value')

@@ -73,6 +73,7 @@ from IPython.display import display
 
 from order_guide_reader import OrderGuideReader
 from order_grid_widget import OrderGridWidget
+from utils import _try_parse_size
 
 ORDERS_DIR = 'orders'
 CREATED_DIR = os.path.join(ORDERS_DIR, 'created')
@@ -126,6 +127,35 @@ def _clean_number_cell(val):
         s = m.group(1)
     return int(s) if re.fullmatch(r'-?\d+', s) else s
 
+def _case_price(price, unit, size_str):
+    """Best-estimate dollar cost of ONE case/unit as ordered.
+
+    For weight-priced items (order guide 'unit' == 'lb') the guide's
+    'price' field is a $/lb *rate* -- CostCalculator and the Order Guide
+    Reader both divide by exactly 1 lb when computing $/quantity for
+    these rows, confirming 'price' is never a case total for them. Order
+    Creator needs an actual per-case dollar figure to multiply by order
+    quantity, so the rate gets multiplied by the case's nominal size
+    (e.g. "40 lb") to estimate what one case will cost -- an estimate,
+    since the exact billed weight isn't known until the case is weighed
+    at delivery. Non-'lb' items' 'price' is already the case price as
+    listed in the guide, so it's returned unchanged.
+    """
+    price = _num(price)
+    if price is None:
+        return None
+    if isinstance(unit, str) and unit.strip().lower() == 'lb':
+        size_q = _try_parse_size(size_str) if size_str else None
+        if size_q is None:
+            return None
+        try:
+            lbs = size_q.to('lb').magnitude
+        except Exception:
+            return None
+        if lbs <= 0:
+            return None
+        return price * lbs
+    return price
 
 def _with_brand(description, brand):
     """Append a non-empty brand to the description, comma-separated --
@@ -341,14 +371,19 @@ class OrderCreator:
                 opt_id = int(opt_id)
             except (TypeError, ValueError):
                 opt_id = int(i)
+            size_str = str(row.get('size', '') or '')
+            unit_str = str(row.get('unit', '') or '')
+            raw_price = row.get('price')
             opts.append({
                 'opt_id': opt_id,
                 'supplier': str(row.get('supplier', '') or ''),
                 'number': _clean_number_cell(row.get('number', '')),
                 'description': _with_brand(row.get('description', ''),
                                            row.get('brand', '')),
-                'size': str(row.get('size', '') or ''),
-                'price': _num(row.get('price'), default=row.get('price')),
+                'size': size_str,
+                'unit': unit_str,
+                'price': _num(raw_price, default=raw_price),
+                'case_price': _case_price(raw_price, unit_str, size_str),
                 'per_quant': per_str,
                 'date': str(row.get('date', '') or ''),
                 '_per_val': per_val,
@@ -811,6 +846,9 @@ class OrderCreator:
                 if not q or q <= 0:
                     continue
                 price = _num(opt['price'])
+                case_price = opt.get('case_price')
+                if case_price is None:
+                    case_price = price
                 lines.append({
                     'nickname': nick,
                     'order quant': q,
@@ -819,7 +857,7 @@ class OrderCreator:
                     'description': opt['description'],
                     'size': opt['size'],
                     'price': price if price is not None else opt['price'],
-                    'est total': round(q * price, 2) if price is not None else '',
+                    'est total': round(q * case_price, 2) if case_price is not None else '',
                 })
 
         with self.status_output:

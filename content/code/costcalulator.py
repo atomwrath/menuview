@@ -82,21 +82,34 @@ class CostCalculator:
             if (r['unit'] in ['lb', 'LB', 'Lb']):
                 quant = Q_('1 lb')
                 
+            # No caller-supplied quantity -> default to "1 of THIS row's own
+            # purchase unit" so the cost trivially equals the row's own
+            # price, no conversion needed. Computed fresh per row (never
+            # written back into `myquant`) since different rows for the
+            # same nickname can be priced in different unit types (e.g. one
+            # by weight, one by volume) -- reusing one row's default for
+            # the next row would demand a conversion between units nothing
+            # actually asked for, which used to misfire a spurious
+            # "[conversion missing]" error and silently zero that row's cost.
+            row_quant = myquant if myquant is not None else Q_(f"1 {str(quant.units)}")
+
             nextprice = 0
             myconv = 1
-            if (myquant == None):
-                myquant = Q_(f"1 {str(quant.units)}")
-            if (myquant.m == 0):
-                myquant = Q_(f"0 {str(quant.units)}")
+            if (row_quant.m == 0):
+                row_quant = Q_(f"0 {str(quant.units)}")
                     
             else:
-                nextprice, myconv = quantity_cost_and_conv(price/quant, myquant, parse_unit_conversion(thisconv))
+                nextprice, myconv = quantity_cost_and_conv(price/quant, row_quant, parse_unit_conversion(thisconv))
                 if nextprice is None:
-                    # Build a readable hint about what conversion is missing
-                    recipe_unit  = str(myquant.units)
+                    # Build a readable hint about what conversion is missing.
+                    # maybeprint, not print -- this is dev/debug detail; the
+                    # user-facing surface for a missing conversion is the red
+                    # border DataFrameWidget draws on the 'conversion' cell
+                    # via self.conversion_errors, not a console message.
+                    recipe_unit  = str(row_quant.units)
                     purchase_unit = str((price/quant).units)
                     available    = ', '.join(str(c) for c in thisconv) if thisconv else 'none'
-                    print(
+                    maybeprint(
                         f"[conversion missing] '{myingr}': "
                         f"recipe uses '{recipe_unit}' but is priced in '{purchase_unit}'. "
                         f"Available conversions: [{available}]. "
@@ -117,7 +130,7 @@ class CostCalculator:
                 r['_guide_index'] = i          # track the real uni_g row this came from
                 mydf = pd.concat([mydf, pd.DataFrame([r])], ignore_index=True)
             else:
-                maybeprint(f"! zero cost, {myingr}, {myquant}")
+                maybeprint(f"! zero cost, {myingr}, {row_quant}")
         if len(mydf) == 0:
             print(f"!!! no cost found for: {myingr}, {myquant}")
         return mydf
