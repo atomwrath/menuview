@@ -442,12 +442,14 @@ class RecipeGridWidget(anywidget.AnyWidget):
               <button data-action="cut">Cut</button>
               <button data-action="paste" ${hasClip ? "" : "disabled"}>Paste</button>
               <button data-action="view_below">View selected below</button>
+              <button data-action="label">Make label\u2026</button>
             `;
           } else {
             // View / Flatten are read-only: no cut/paste
             menu.innerHTML = `
               <button data-action="copy">Copy</button>
               <button data-action="view_below">View selected below</button>
+              <button data-action="label">Make label\u2026</button>
             `;
           }
           menu.querySelectorAll("button[data-action]").forEach((b) =>

@@ -4,6 +4,7 @@ import numpy as np
 from IPython.display import display, clear_output
 from costcalulator import CostCalculator
 from utils import *
+from label_maker import LabelMakerWidget
 
 try:
     from recipe_grid_widget import RecipeGridWidget
@@ -901,7 +902,7 @@ class DataFrameWidget:
                 return
             action = content.get('action')
 
-            read_only_actions = {'copy', 'view_below'}
+            read_only_actions = {'copy', 'view_below', 'label'}
             if self.widget_mode != 'Edit' and action not in read_only_actions:
                 return   # View/Flatten: only Copy and View-selected-below are allowed
 
@@ -913,6 +914,8 @@ class DataFrameWidget:
                 self._selection_paste(sel[0])   # paste goes in above the first selected row
             elif action == 'view_below':
                 self._selection_view_below(sel)
+            elif action == 'label':
+                self._selection_label(sel)
         
     def _update_display_fast_guide(self):
         '''Render self.df (a 'guide' price-entry list) into a single-model
@@ -1268,6 +1271,66 @@ class DataFrameWidget:
         with self.child_output:
             self.child_output.clear_output()
         child.update_display()
+
+    def _selection_label(self, rows, initial_scope=None):
+        '''Open the label maker below the grid, fed with both the current
+        selection and the whole recipe (the widget has a scope toggle), so
+        "Make label" works for either without a second menu entry. Values
+        are pre-formatted with _fast_format_value so the label shows numbers
+        exactly the way the grid does. Displays straight into child_output
+        with its own Close button — no DataFrameWidget child is created, so
+        close_child stays a no-op for it and any later view-below simply
+        replaces it.'''
+        try:
+            from label_maker import LabelMakerWidget
+        except Exception as exc:
+            print(f'[label] label_maker unavailable: {exc}')
+            return
+        from datetime import date
+
+        recipename = str(self.df.iloc[0]['ingredient'])
+        skip_cols = {'item'}
+
+        def _rows_for(indices):
+            out = []
+            for i in indices:
+                if i == 0 or i >= len(self.df):
+                    continue
+                r = self.df.iloc[i]
+                if str(r.get('ingredient', '')).strip() == '':
+                    continue
+                out.append({c: self._fast_format_value(r[c])
+                            for c in self.df.columns if c not in skip_cols})
+            return out
+
+        cols = [c for c in self.df.columns if c not in skip_cols]
+        header_row = ({c: self._fast_format_value(self.df.iloc[0][c]) for c in cols}
+                          if len(self.df) else {})
+        w = LabelMakerWidget()
+        # Note: no w.columns assignment here -- LabelMakerWidget's own
+        # __init__ already applies the last-saved column choice (or its
+        # ['ingredient', 'quantity'] default on first-ever use), and the
+        # widget filters that against all_columns for whatever recipe is
+        # showing. Setting it here would just override "last used" with
+        # a fixed default every time.
+        w.title = recipename
+        w.date_str = date.today().strftime('%m/%d/%Y')
+        w.all_columns = cols
+        w.header_row = header_row
+        w.rows_all = _rows_for(range(1, len(self.df)))
+        w.rows_selection = _rows_for(rows)
+        if initial_scope:
+            w.initial_scope = initial_scope
+
+        self.close_child()
+        close_btn = widgets.Button(description='Close', layout=widgets.Layout(width='80px'))
+        box = widgets.VBox([close_btn, w])
+        def _on_close(b):
+            self.child_output.clear_output()
+        close_btn.on_click(_on_close)
+        with self.child_output:
+            self.child_output.clear_output(wait=True)
+            display(box)
     
     def update_display(self):
         # Fast path: recipe View, Edit, and Flatten modes all render as one

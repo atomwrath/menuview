@@ -8,6 +8,7 @@ from costcalulator import CostCalculator
 from utils import *
 from data_frame_widget import DataFrameWidget, DisplayDataFrameWidget
 from toolbar_widget import ToolbarWidget
+from menu_button_widget import MenuButtonWidget
 from menuview_theme import theme_widget
 
 class _TextBoxShim:
@@ -65,9 +66,25 @@ class DataFrameExplorer:
         )        
         self.searchinput.observe(self.update_search, names='value')
 
-        # copy current display to clipboard
-        copybutton = widgets.Button(description=f'copy sheet')
-        copybutton.on_click(lambda x: self.df_widget.df.to_clipboard())
+       # "..." menu: copy the current sheet to clipboard, or make a
+        # printable label for the currently loaded recipe. Replaces the
+        # old always-visible "copy sheet" button now that there's a
+        # second action to offer alongside it.
+        self.sheet_menu = MenuButtonWidget(items=[
+            {'action': 'copy_sheet', 'label': 'Copy sheet'},
+            {'action': 'create_label', 'label': 'Make label…'},
+        ])
+        def _on_sheet_menu(widget, content, buffers):
+            action = content.get('action') if content.get('type') == 'menu_action' else None
+            if action == 'copy_sheet':
+                self.df_widget.df.to_clipboard()
+            elif action == 'create_label':
+                # No row selection at this level -- the label opens showing
+                # just the title/subtitle info (yield, cost, etc.); "Whole
+                # recipe" is one click away in the label's own scope toggle
+                # if the full ingredient list is wanted too.
+                self.df_widget._selection_label([], initial_scope='selection')
+        self.sheet_menu.on_msg(_on_sheet_menu)
         
         # rename or duplicate the currently loaded recipe / ingredient (edit mode only)
         self.renamebutton = widgets.Button(description='rename / duplicate', disabled=True)
@@ -130,7 +147,7 @@ class DataFrameExplorer:
         
         topdisplay = widgets.VBox([
             self.menubutton_hbox,
-            widgets.HBox([self.backbutton, self.searchinput, copybutton, self.renamebutton]),
+            widgets.HBox([self.backbutton, self.searchinput, self.sheet_menu, self.renamebutton]),
             self.rename_dialog,
             self.delete_confirm_dialog,
             self.dfdisplay
