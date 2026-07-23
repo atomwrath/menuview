@@ -69,6 +69,24 @@ Layout
     label for the maximum-legibility default, or push past it and accept
     some clipping — the preview's warning banner covers both cases.
 
+    Quantity-style values ('quantity', 'equ quant') are treated as a
+    single unbreakable token when wrapping: their internal spaces become
+    non-breaking spaces in fmtVal, and the wrap functions don't break on
+    U+00A0 — so "1 1/2 cup" never splits across lines between the number
+    and the unit, in any format (table first column, list paragraph,
+    per-item subtitle alike).
+
+Controls panel
+    The options render as one workbench-styled card matching the grid
+    widgets (same palette/variables as recipe_grid_widget.py): a header
+    band (panel name + recipe title), a body split into a controls column
+    and the live preview beside it (wrapping below on narrow screens),
+    and a footer band with the export actions. Controls are grouped into
+    Content / Label / Details sections on a label–control grid. Scope and
+    Format are dropdowns; the two column selections open as dropdown
+    popover checklists (portal-positioned like menu_button_widget.py's
+    menu, so no overflow context can clip them).
+
 Data flow
     The kernel fills title / date_str / all_columns / header_row / rows_all /
     rows_selection once when the widget is created (rows and header_row are
@@ -293,18 +311,34 @@ class LabelMakerWidget(anywidget.AnyWidget):
       // paragraph, and the title-row subtitle all format it identically
       // rather than three separate call sites drifting apart.
       const DOLLAR_COLS = new Set(["cost"]);
+      // Columns whose value is a "number unit" pair ("2 cup", "1 1/2 lb")
+      // that must never be split across lines by word-wrap. fmtVal turns
+      // their internal spaces into non-breaking spaces (U+00A0), and the
+      // wrap functions below deliberately don't treat U+00A0 as a break
+      // opportunity -- so "1 1/2 cup" always travels as one token. The
+      // NBSP measures and renders at ordinary space width in both the
+      // canvas measurer and the SVG output, so nothing shifts visually.
+      const NOWRAP_COLS = new Set(["quantity", "equ quant"]);
       const fmtVal = (col, val) => {
-        const v = String(val ?? "").trim();
-        if (!v || !DOLLAR_COLS.has(col) || v.startsWith("$") || v.startsWith("-$")) return v;
-        return v.startsWith("-") ? "-$" + v.slice(1) : "$" + v;
+        let v = String(val ?? "").trim();
+        if (v && DOLLAR_COLS.has(col) && !v.startsWith("$") && !v.startsWith("-$"))
+          v = v.startsWith("-") ? "-$" + v.slice(1) : "$" + v;
+        if (NOWRAP_COLS.has(col)) v = v.replace(/\s+/g, "\u00A0");
+        return v;
       };
 
       const currentRows = () =>
         scope === "selection" ? (model.get("rows_selection") || [])
                               : (model.get("rows_all") || []);
 
+      // Word-splitter shared by both wrap functions: any run of
+      // whitespace EXCEPT the non-breaking space (U+00A0) is a break
+      // opportunity. \s in JS regex matches U+00A0, so a plain /\s+/
+      // here would undo fmtVal's number-unit gluing above.
+      const BREAKABLE = /[^\S\u00A0]+/;
+
       function wrapText(text, font, maxW) {
-        const words = String(text).split(/\s+/).filter(Boolean);
+        const words = String(text).split(BREAKABLE).filter(Boolean);
         if (!words.length) return [""];
         const lines = [];
         let line = words[0];
@@ -324,7 +358,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
       // line to it (as a single wrapText call would) wastes width on a
       // multi-line title for no reason.
       function wrapFirstLineNarrow(text, font, firstMaxW, restMaxW) {
-        const words = String(text).split(/\s+/).filter(Boolean);
+        const words = String(text).split(BREAKABLE).filter(Boolean);
         if (!words.length) return [""];
         const lines = [];
         let line = words[0];
@@ -799,74 +833,107 @@ class LabelMakerWidget(anywidget.AnyWidget):
       }
 
       // ── controls + preview scaffold (built once; preview redraws) ────
+      // One card, workbench-styled like the grids: a header band, a body
+      // split into a controls column (grouped, labelled sections laid out
+      // on a label/control grid) and a preview pane beside it, and a
+      // footer band holding the export actions. Compact dropdowns replace
+      // the old radio rows (Show, Format) and the two long checkbox rows
+      // (the column pickers, now popover multi-selects).
       el.innerHTML = `
-        <div class="lmw-panel">
-          <div class="lmw-row lmw-scope-row">
-            <span class="lmw-lbl">Content:</span>
-            <label><input type="radio" name="lmw-scope" value="selection"> Selection</label>
-            <label><input type="radio" name="lmw-scope" value="all"> Whole recipe</label>
+        <div class="lmw-card">
+          <div class="lmw-head">
+            <span class="lmw-head-title">Make label</span>
+            <span class="lmw-title-txt"></span>
             <span class="lmw-count"></span>
           </div>
-          <div class="lmw-row"><span class="lmw-lbl">Ingredient columns:</span>
-            <span class="lmw-cols"></span></div>
-          <div class="lmw-row"><span class="lmw-lbl">Title row columns:</span>
-            <span class="lmw-header-cols"></span></div>
-          <div class="lmw-row lmw-format-row">
-            <span class="lmw-lbl">Format:</span>
-            <label><input type="radio" name="lmw-format" value="table"> Table</label>
-            <label><input type="radio" name="lmw-format" value="list"> Ingredient list</label>
-            <label><input type="radio" name="lmw-format" value="per_item"> Label per item</label>
+          <div class="lmw-body">
+            <div class="lmw-controls">
+              <div class="lmw-sec">
+                <div class="lmw-sec-title">Content</div>
+                <div class="lmw-grid">
+                  <span class="lmw-lbl">Show</span>
+                  <select class="lmw-scope">
+                    <option value="selection">Selection</option>
+                    <option value="all">Whole recipe</option>
+                  </select>
+                  <span class="lmw-lbl">Format</span>
+                  <select class="lmw-format">
+                    <option value="table">Table</option>
+                    <option value="list">Ingredient list</option>
+                    <option value="per_item">Label per item</option>
+                  </select>
+                  <span class="lmw-lbl">Ingredient columns</span>
+                  <button type="button" class="lmw-dd lmw-dd-cols">
+                    <span class="lmw-dd-text"></span><span class="lmw-dd-caret">&#9662;</span>
+                  </button>
+                  <span class="lmw-lbl">Title columns</span>
+                  <button type="button" class="lmw-dd lmw-dd-hcols">
+                    <span class="lmw-dd-text"></span><span class="lmw-dd-caret">&#9662;</span>
+                  </button>
+                </div>
+              </div>
+              <div class="lmw-sec">
+                <div class="lmw-sec-title">Label</div>
+                <div class="lmw-grid">
+                  <span class="lmw-lbl">Size</span>
+                  <span class="lmw-inline">
+                    <select class="lmw-size"></select>
+                    <button type="button" class="lmw-swap" title="Swap width and height">&#8644;</button>
+                    <span class="lmw-custom" style="display:none">
+                      <input type="number" class="lmw-w" min="0.5" max="12" step="0.25"> &times;
+                      <input type="number" class="lmw-h" min="0.5" max="12" step="0.25"> in
+                    </span>
+                  </span>
+                  <span class="lmw-lbl">Print DPI</span>
+                  <select class="lmw-dpi">
+                    <option value="203">203 (thermal)</option>
+                    <option value="300">300</option>
+                    <option value="600">600</option>
+                  </select>
+                  <span class="lmw-lbl">Text size</span>
+                  <span class="lmw-inline">
+                    <button type="button" class="lmw-text-dec" title="Smaller text">&minus;</button>
+                    <span class="lmw-text-pct">100%</span>
+                    <button type="button" class="lmw-text-inc" title="Larger text">+</button>
+                  </span>
+                </div>
+              </div>
+              <div class="lmw-sec">
+                <div class="lmw-sec-title">Details</div>
+                <div class="lmw-grid">
+                  <span class="lmw-lbl">Show on label</span>
+                  <span class="lmw-inline lmw-checks">
+                    <label><input type="checkbox" class="lmw-title-cb"> Title</label>
+                    <label><input type="checkbox" class="lmw-date-cb"> Date</label>
+                    <label><input type="checkbox" class="lmw-year-cb"> Year</label>
+                    <label><input type="checkbox" class="lmw-head-cb"> Column headers</label>
+                  </span>
+                  <span class="lmw-lbl">Initials</span>
+                  <input type="text" class="lmw-initials-input" placeholder="e.g. JS">
+                  <span class="lmw-lbl">Note</span>
+                  <input type="text" class="lmw-note-input" placeholder="e.g. Keep refrigerated">
+                </div>
+              </div>
+            </div>
+            <div class="lmw-preview-pane">
+              <div class="lmw-preview"></div>
+              <div class="lmw-caption"></div>
+            </div>
           </div>
-          <div class="lmw-row">
-            <span class="lmw-lbl">Size:</span>
-            <select class="lmw-size"></select>
-            <span class="lmw-custom" style="display:none">
-              <input type="number" class="lmw-w" min="0.5" max="12" step="0.25"> ×
-              <input type="number" class="lmw-h" min="0.5" max="12" step="0.25"> in
-            </span>
-            <button type="button" class="lmw-swap" title="Swap width and height">⇄</button>
-            <span class="lmw-lbl" style="margin-left:10px">DPI:</span>
-            <select class="lmw-dpi">
-              <option value="203">203 (thermal)</option>
-              <option value="300">300</option>
-              <option value="600">600</option>
-            </select>
-          </div>
-          <div class="lmw-row">
-            <label><input type="checkbox" class="lmw-title-cb"> Title</label>
-            <label><input type="checkbox" class="lmw-date-cb"> Date</label>
-            <label><input type="checkbox" class="lmw-year-cb"> Year</label>
-            <span class="lmw-lbl">Initials:</span>
-            <input type="text" class="lmw-initials-input" placeholder="e.g. JS" style="width:60px">
-            <label><input type="checkbox" class="lmw-head-cb"> Column headers</label>
-          </div>
-          <div class="lmw-row">
-            <span class="lmw-lbl">Text size:</span>
-            <button type="button" class="lmw-text-dec" title="Smaller text">−</button>
-            <span class="lmw-text-pct">100%</span>
-            <button type="button" class="lmw-text-inc" title="Larger text">+</button>
-          </div>
-          <div class="lmw-row">
-            <span class="lmw-lbl">Note:</span>
-            <input type="text" class="lmw-note-input" placeholder="e.g. Keep refrigerated">
-          </div>
-          <div class="lmw-row">
+          <div class="lmw-foot">
             <span class="lmw-item-nav" style="display:none">
-              <button type="button" class="lmw-item-prev" title="Previous item">−</button>
+              <button type="button" class="lmw-item-prev" title="Previous item">&minus;</button>
               <span class="lmw-item-count"></span>
               <button type="button" class="lmw-item-next" title="Next item">+</button>
             </span>
-            <span class="lmw-lbl">Copies:</span>
+            <span class="lmw-lbl">Copies</span>
             <input type="number" class="lmw-copies" min="1" max="99" step="1">
-            <button type="button" class="lmw-png">⬇ Download PNG</button>
-            <button type="button" class="lmw-png-all" style="display:none">⬇ Download All PNGs</button>
-            <button type="button" class="lmw-print">🖨 Print / Save PDF</button>
+            <span class="lmw-foot-spacer"></span>
+            <button type="button" class="lmw-png">&#11015; PNG</button>
+            <button type="button" class="lmw-png-all" style="display:none">&#11015; All PNGs</button>
+            <button type="button" class="lmw-print lmw-primary">&#128424; Print / PDF</button>
             <span class="lmw-status"></span>
           </div>
-        </div>
-        <div class="lmw-preview-wrap">
-          <div class="lmw-preview"></div>
-          <div class="lmw-caption"></div>
         </div>`;
 
       const q = (sel) => el.querySelector(sel);
@@ -876,22 +943,107 @@ class LabelMakerWidget(anywidget.AnyWidget):
         s.classList.toggle("lmw-bad", !!bad);
       };
 
-      // populate static controls
+      // populate the size dropdown (presets + Custom…)
       const sizeSel = q(".lmw-size");
       PRESETS.forEach(([w, h]) => {
         const o = document.createElement("option");
-        o.value = `${w}x${h}`; o.textContent = `${w} × ${h} in`;
+        o.value = `${w}x${h}`; o.textContent = `${w} \u00D7 ${h} in`;
         sizeSel.appendChild(o);
       });
       const custom = document.createElement("option");
-      custom.value = "custom"; custom.textContent = "Custom…";
+      custom.value = "custom"; custom.textContent = "Custom\u2026";
       sizeSel.appendChild(custom);
+
+      // ── column-picker popovers ───────────────────────────────────────
+      // The two column selections open as dropdown popovers (checkbox
+      // lists) instead of permanent checkbox rows. The popover is
+      // appended straight to <body> and positioned with fixed
+      // coordinates from the trigger's bounding rect -- the same portal
+      // approach menu_button_widget.py uses -- so it can't be clipped by
+      // any overflow context between here and the page. anywidget injects
+      // _css document-wide, so .lmw-menu still styles it out there; its
+      // colors are hardcoded with explicit dark overrides for the same
+      // reason (no .lmw-root ancestor to inherit variables from).
+      let menuEl = null;      // the open popover, or null
+      let menuKind = null;    // "cols" | "hcols" while open
+
+      function closeMenu() {
+        if (!menuEl) return;
+        menuEl.remove();
+        menuEl = null; menuKind = null;
+        document.removeEventListener("pointerdown", onDocPointerDown);
+        window.removeEventListener("resize", closeMenu);
+        window.removeEventListener("scroll", closeMenu, true);
+      }
+      function onDocPointerDown(e) {
+        if (menuEl && !menuEl.contains(e.target)) closeMenu();
+      }
+
+      // Which columns a picker offers, and the current selection, for
+      // either kind. 'ingredient' isn't offered for the title-row picker
+      // since it's just the recipe name, already shown as the title.
+      const menuOptions = (kind) => {
+        const all = model.get("all_columns") || [];
+        return kind === "hcols" ? all.filter((c) => c !== "ingredient") : all;
+      };
+      const menuChosen = (kind) =>
+        new Set(model.get(kind === "hcols" ? "header_columns" : "columns") || []);
+
+      function fillMenu() {
+        if (!menuEl) return;
+        const chosen = menuChosen(menuKind);
+        menuEl.innerHTML = menuOptions(menuKind).map((c) =>
+          `<label class="lmw-mi"><input type="checkbox" value="${esc(c)}" ` +
+          `${chosen.has(c) ? "checked" : ""}> ${esc(c)}</label>`).join("");
+        menuEl.querySelectorAll("input").forEach((cb) =>
+          cb.addEventListener("change", () => {
+            const order = menuOptions(menuKind);
+            const picked = new Set(Array.from(menuEl.querySelectorAll("input:checked"))
+              .map((x) => x.value));
+            model.set(menuKind === "hcols" ? "header_columns" : "columns",
+                      order.filter((c) => picked.has(c)));
+            model.save_changes();
+          }));
+      }
+
+      function openMenu(kind, btn) {
+        closeMenu();
+        menuKind = kind;
+        menuEl = document.createElement("div");
+        menuEl.className = "lmw-menu";
+        // clicks inside shouldn't bubble to the document closer
+        menuEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+        fillMenu();
+        document.body.appendChild(menuEl);
+        const r = btn.getBoundingClientRect();
+        const mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
+        let left = Math.min(r.left, window.innerWidth - mw - 8);
+        let top = r.bottom + 4;
+        if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+        menuEl.style.left = Math.max(8, left) + "px";
+        menuEl.style.top = top + "px";
+        document.addEventListener("pointerdown", onDocPointerDown);
+        window.addEventListener("resize", closeMenu);
+        window.addEventListener("scroll", closeMenu, true);
+      }
+
+      const wireDD = (kind, sel) => {
+        const btn = q(sel);
+        btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (menuEl && menuKind === kind) closeMenu();
+          else openMenu(kind, e.currentTarget);
+        });
+      };
+      wireDD("cols", ".lmw-dd-cols");
+      wireDD("hcols", ".lmw-dd-hcols");
 
       function syncControls() {
         const w = model.get("width_in"), h = model.get("height_in");
         const preset = PRESETS.find(([pw, ph]) => pw === w && ph === h);
         sizeSel.value = preset ? `${w}x${h}` : "custom";
-        q(".lmw-custom").style.display = preset ? "none" : "inline";
+        q(".lmw-custom").style.display = preset ? "none" : "inline-flex";
         q(".lmw-w").value = w; q(".lmw-h").value = h;
         q(".lmw-dpi").value = String(model.get("dpi"));
         q(".lmw-title-cb").checked = model.get("show_title");
@@ -904,13 +1056,14 @@ class LabelMakerWidget(anywidget.AnyWidget):
         q(".lmw-text-pct").textContent = Math.round((model.get("text_scale") || 1) * 100) + "%";
         const noteVal = model.get("label_note") || "";
         if (q(".lmw-note-input").value !== noteVal) q(".lmw-note-input").value = noteVal;
-        el.querySelector(`input[name="lmw-scope"][value="${scope}"]`).checked = true;
+        q(".lmw-title-txt").textContent = model.get("title") || "";
+
         const fmt = ["table", "list", "per_item"].includes(model.get("format_style"))
           ? model.get("format_style") : "table";
-        el.querySelector(`input[name="lmw-format"][value="${fmt}"]`).checked = true;
+        q(".lmw-format").value = fmt;
 
         const isPerItemNow = fmt === "per_item";
-        q(".lmw-item-nav").style.display = isPerItemNow ? "flex" : "none";
+        q(".lmw-item-nav").style.display = isPerItemNow ? "inline-flex" : "none";
         q(".lmw-png-all").style.display = isPerItemNow ? "inline-block" : "none";
         if (isPerItemNow) {
           const itemRows = currentRows();
@@ -921,51 +1074,48 @@ class LabelMakerWidget(anywidget.AnyWidget):
           q(".lmw-item-next").disabled = shown >= n;
         }
 
+        // scope dropdown: the Selection option carries its own row count
+        // (what the old "(3 rows selected)" side note used to say), and
+        // is disabled outright when there's nothing it could show
         const nSel = (model.get("rows_selection") || []).length;
         const titleOnly = !nSel && forcedScope === "selection";
+        const scopeSel = q(".lmw-scope");
+        const selOpt = scopeSel.querySelector('option[value="selection"]');
+        selOpt.textContent =
+          nSel ? `Selection (${nSel} row${nSel === 1 ? "" : "s"})`
+               : (titleOnly ? "Selection (title row only)" : "Selection (none)");
+        selOpt.disabled = !nSel && !titleOnly;
+        scopeSel.value = scope;
+        // header-band note only for the states worth calling out
         q(".lmw-count").textContent =
-          nSel ? `(${nSel} row${nSel === 1 ? "" : "s"} selected)`
-               : (titleOnly ? "(title row only)" : "(no selection)");
-        el.querySelector('input[name="lmw-scope"][value="selection"]').disabled = !nSel && !titleOnly;
+          (scope === "selection" && titleOnly) ? "title row only" : "";
 
-        // ingredient (body row) column checkboxes
-        const chosen = new Set(model.get("columns") || []);
-        q(".lmw-cols").innerHTML = (model.get("all_columns") || []).map((c) =>
-          `<label><input type="checkbox" class="lmw-col-cb" value="${esc(c)}" ` +
-          `${chosen.has(c) ? "checked" : ""}> ${esc(c)}</label>`).join(" ");
-        el.querySelectorAll(".lmw-col-cb").forEach((cb) =>
-          cb.addEventListener("change", () => {
-            const order = model.get("all_columns") || [];
-            const picked = Array.from(el.querySelectorAll(".lmw-col-cb:checked"))
-              .map((x) => x.value);
-            model.set("columns", order.filter((c) => picked.includes(c)));
-            model.save_changes();
-          }));
+        // dropdown button captions: the current picks, in table order
+        const ddText = (kind) => {
+          const chosen = menuChosen(kind);
+          const names = menuOptions(kind).filter((c) => chosen.has(c));
+          return names.length ? names.join(", ") : "none";
+        };
+        q(".lmw-dd-cols .lmw-dd-text").textContent = ddText("cols");
+        q(".lmw-dd-hcols .lmw-dd-text").textContent = ddText("hcols");
 
-        // title-row (header_row) column checkboxes -- independent
-        // selection from the ingredient columns above; 'ingredient' isn't
-        // offered here since it's just the recipe name, already the title
-        const chosenHdr = new Set(model.get("header_columns") || []);
-        const hdrDisabled = !model.get("show_title");
-        q(".lmw-header-cols").innerHTML = (model.get("all_columns") || [])
-          .filter((c) => c !== "ingredient").map((c) =>
-            `<label><input type="checkbox" class="lmw-hcol-cb" value="${esc(c)}" ` +
-            `${chosenHdr.has(c) ? "checked" : ""} ${hdrDisabled ? "disabled" : ""}>` +
-            ` ${esc(c)}</label>`).join(" ");
-        el.querySelectorAll(".lmw-hcol-cb").forEach((cb) =>
-          cb.addEventListener("change", () => {
-            const order = (model.get("all_columns") || []).filter((c) => c !== "ingredient");
-            const picked = Array.from(el.querySelectorAll(".lmw-hcol-cb:checked"))
-              .map((x) => x.value);
-            model.set("header_columns", order.filter((c) => picked.includes(c)));
-            model.save_changes();
-          }));
+        // the title-row picker only matters while Title is on (its
+        // subtitle is where those fields render) -- disable it otherwise
+        const hdrOff = !model.get("show_title");
+        const hBtn = q(".lmw-dd-hcols");
+        hBtn.disabled = hdrOff;
+        hBtn.title = hdrOff ? "Shown under the title \u2014 turn Title on to use" : "";
+        if (hdrOff && menuKind === "hcols") closeMenu();
+
+        // an open column popover tracks model changes in place
+        fillMenu();
       }
 
       function updatePreview() {
         const res = scaledLayout();
         const wrap = q(".lmw-preview");
-        const maxW = Math.min(el.clientWidth - 24 || 460, 460);
+        const pane = q(".lmw-preview-pane");
+        const maxW = Math.min((pane.clientWidth || el.clientWidth || 484) - 24, 460);
         const W = model.get("width_in") * PX_PER_IN;
         const previewScale = Math.min(2, Math.max(maxW / W, 0.5));
         wrap.innerHTML = res.svg;
@@ -973,9 +1123,9 @@ class LabelMakerWidget(anywidget.AnyWidget):
         svgEl.style.width = (W * previewScale) + "px";
         svgEl.style.height = (model.get("height_in") * PX_PER_IN * previewScale) + "px";
         q(".lmw-caption").textContent =
-          `${model.get("width_in")} × ${model.get("height_in")} in — preview at ` +
+          `${model.get("width_in")} \u00D7 ${model.get("height_in")} in \u2014 preview at ` +
           `${Math.round(previewScale * 100)}% of print size` +
-          (res.clipped ? " — ⚠ content may not fit: reduce text size, use a larger " +
+          (res.clipped ? " \u2014 \u26A0 content may not fit: reduce text size, use a larger " +
                           "label, or fewer columns/rows" : "");
         q(".lmw-caption").classList.toggle("lmw-bad", res.clipped);
       }
@@ -983,13 +1133,16 @@ class LabelMakerWidget(anywidget.AnyWidget):
       const refresh = () => { syncControls(); updatePreview(); };
 
       // ── wire events ──────────────────────────────────────────────────
-      el.querySelectorAll('input[name="lmw-scope"]').forEach((r) =>
-        r.addEventListener("change", () => { scope = r.value; itemIndex = 0; refresh(); }));
-      el.querySelectorAll('input[name="lmw-format"]').forEach((r) =>
-        r.addEventListener("change", () => {
-          itemIndex = 0;
-          model.set("format_style", r.value); model.save_changes();
-        }));
+      q(".lmw-scope").addEventListener("change", () => {
+        scope = q(".lmw-scope").value;
+        itemIndex = 0;
+        refresh();
+      });
+      q(".lmw-format").addEventListener("change", () => {
+        itemIndex = 0;
+        model.set("format_style", q(".lmw-format").value);
+        model.save_changes();
+      });
       q(".lmw-item-prev").addEventListener("click", () => {
         itemIndex = Math.max(0, itemIndex - 1);
         refresh();
@@ -1001,7 +1154,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
       });
       sizeSel.addEventListener("change", () => {
         if (sizeSel.value === "custom") {
-          q(".lmw-custom").style.display = "inline";
+          q(".lmw-custom").style.display = "inline-flex";
           return;   // wait for the number inputs
         }
         const [w, h] = sizeSel.value.split("x").map(Number);
@@ -1079,46 +1232,177 @@ class LabelMakerWidget(anywidget.AnyWidget):
     """
 
     _css = """
-    .lmw-root { --lmw-ink:    var(--jp-ui-font-color1, #1c2733);
-                --lmw-muted:  #66727f;
-                --lmw-border: #dde3ea;
-                --lmw-bg:     var(--jp-layout-color1, #fff);
-                --lmw-accent: #2563eb;
-                --lmw-bad:    #b91c1c;
+    /* ── Workbench palette — same variable scheme (and same light/dark
+       values) as recipe_grid_widget.py and guide_grid_widget.py, so the
+       label maker reads as another card in the same interface. ───────── */
+    .lmw-root { --lmw-ink:        var(--jp-ui-font-color1, #1c2733);
+                --lmw-muted:      #66727f;
+                --lmw-border:     #dde3ea;
+                --lmw-border-soft:#ebeff3;
+                --lmw-head-bg:    #f7f9fb;
+                --lmw-accent:     #2563eb;
+                --lmw-accent-soft:#eaf1fe;
+                --lmw-accent-bord:#bcd3fb;
+                --lmw-bg:         var(--jp-layout-color1, #fff);
+                --lmw-bad:        #b91c1c;
                 font-family: var(--jp-ui-font-family, -apple-system, sans-serif);
                 font-size: 13px; color: var(--lmw-ink); }
-    body[data-jp-theme-light="false"] .lmw-root {
-        --lmw-muted:  #9aa5af;
-        --lmw-border: #3a4149;
-        --lmw-bad:    #f87171; }
 
-    .lmw-panel { border: 1px solid var(--lmw-border); border-radius: 6px;
-                 padding: 6px 8px; margin: 4px 0; }
-    .lmw-row { display: flex; flex-wrap: wrap; align-items: center;
-               gap: 6px 10px; padding: 3px 0; }
-    .lmw-lbl { color: var(--lmw-muted); }
-    .lmw-count { color: var(--lmw-muted); font-size: 12px; }
-    .lmw-item-nav { align-items: center; gap: 6px; }
-    .lmw-item-count { color: var(--lmw-muted); font-size: 12px; white-space: nowrap; }
-    .lmw-root label { display: inline-flex; align-items: center; gap: 3px;
+    /* ── Dark theme override — same variables, new values ────────────── */
+    body[data-jp-theme-light="false"] .lmw-root {
+        --lmw-muted:       #9aa5af;
+        --lmw-border:      #3a4149;
+        --lmw-border-soft: #2e343b;
+        --lmw-head-bg:     #262b31;
+        --lmw-accent:      #5b9dff;
+        --lmw-accent-soft: #1c2a3f;
+        --lmw-accent-bord: #2f4b74;
+        --lmw-bad:         #f87171;
+    }
+
+    /* Fallback if something ever renders the widget outside a Jupyter
+       shell (no data-jp-theme-light attribute present) — defer to the OS. */
+    @media (prefers-color-scheme: dark) {
+        body:not([data-jp-theme-light]) .lmw-root {
+            --lmw-muted:       #9aa5af;
+            --lmw-border:      #3a4149;
+            --lmw-border-soft: #2e343b;
+            --lmw-head-bg:     #262b31;
+            --lmw-accent:      #5b9dff;
+            --lmw-accent-soft: #1c2a3f;
+            --lmw-accent-bord: #2f4b74;
+            --lmw-bad:         #f87171;
+        }
+    }
+
+    /* ── card frame: header band / body / footer band ────────────────── */
+    .lmw-card { border: 1px solid var(--lmw-border); border-radius: 8px;
+                background: var(--lmw-bg); margin: 4px 0; overflow: hidden; }
+    .lmw-head { display: flex; align-items: baseline; gap: 8px;
+                padding: 6px 10px; background: var(--lmw-head-bg);
+                border-bottom: 1px solid var(--lmw-border); }
+    .lmw-head-title { font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
+                      text-transform: uppercase; color: var(--lmw-muted);
+                      white-space: nowrap; }
+    .lmw-title-txt { font-weight: 600; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; }
+    .lmw-count { margin-left: auto; font-size: 12px; color: var(--lmw-muted);
+                 white-space: nowrap; }
+
+    .lmw-body { display: flex; flex-wrap: wrap; align-items: flex-start;
+                gap: 4px 14px; padding: 8px 10px; }
+    .lmw-controls { flex: 1 1 330px; min-width: 290px; max-width: 460px; }
+
+    /* labelled sections, titled like the grids' card headers */
+    .lmw-sec { padding: 5px 0 7px; }
+    .lmw-sec + .lmw-sec { border-top: 1px solid var(--lmw-border-soft); }
+    .lmw-sec-title { font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
+                     text-transform: uppercase; color: var(--lmw-muted);
+                     padding: 2px 0 5px; }
+
+    /* label / control rows on a two-column grid, labels right-aligned */
+    .lmw-grid { display: grid; grid-template-columns: max-content 1fr;
+                gap: 6px 10px; align-items: center; }
+    .lmw-lbl { color: var(--lmw-muted); text-align: right; white-space: nowrap; }
+    .lmw-inline { display: inline-flex; align-items: center; gap: 6px;
+                  flex-wrap: wrap; min-width: 0; }
+    .lmw-checks { gap: 4px 12px; }
+    .lmw-custom { align-items: center; gap: 4px; color: var(--lmw-muted); }
+
+    .lmw-root label { display: inline-flex; align-items: center; gap: 4px;
                       cursor: pointer; white-space: nowrap; }
     .lmw-root input[type="number"] { width: 58px; }
-    .lmw-note-input { flex: 1 1 220px; min-width: 160px; }
+    .lmw-initials-input { width: 70px; }
+    .lmw-note-input { width: 100%; min-width: 140px; box-sizing: border-box; }
     .lmw-root select, .lmw-root input {
         font-size: 13px; color: var(--lmw-ink);
         background: var(--lmw-bg);
-        border: 1px solid var(--lmw-border); border-radius: 4px;
-        padding: 2px 4px; }
+        border: 1px solid var(--lmw-border); border-radius: 6px;
+        padding: 3px 6px; }
+    .lmw-root select { max-width: 100%; }
+    .lmw-root input:focus, .lmw-root select:focus {
+        outline: 2px solid var(--lmw-accent-soft);
+        border-color: var(--lmw-accent); }
+
+    /* buttons: quiet by default, accent-soft on hover — the grids' look */
     .lmw-root button { font-size: 13px; padding: 3px 12px;
         border: 1px solid var(--lmw-border); border-radius: 6px;
-        background: var(--lmw-bg); color: var(--lmw-ink); cursor: pointer; }
-    .lmw-root button:hover { border-color: var(--lmw-accent); }
-    .lmw-status { font-size: 12px; color: var(--lmw-muted); }
+        background: var(--lmw-bg); color: var(--lmw-muted); cursor: pointer; }
+    .lmw-root button:hover:not(:disabled) { background: var(--lmw-accent-soft);
+        border-color: var(--lmw-accent-bord); color: var(--lmw-accent); }
+    .lmw-root button:disabled { opacity: 0.45; cursor: default; }
+    .lmw-swap, .lmw-text-dec, .lmw-text-inc,
+    .lmw-item-prev, .lmw-item-next { padding: 3px 8px; }
+    .lmw-text-pct { min-width: 38px; text-align: center;
+                    font-variant-numeric: tabular-nums; }
+
+    /* primary action (Print) reads like the grids' active-state button */
+    .lmw-root button.lmw-primary { background: var(--lmw-accent);
+        border-color: var(--lmw-accent); color: #fff; }
+    .lmw-root button.lmw-primary:hover:not(:disabled) { background: #1d4fd8;
+        border-color: #1d4fd8; color: #fff; }
+    body[data-jp-theme-light="false"] .lmw-root button.lmw-primary:hover:not(:disabled) {
+        background: #4a8cf0; border-color: #4a8cf0; }
+
+    /* column-picker dropdown trigger: select-shaped, caption + caret */
+    .lmw-dd { display: inline-flex; align-items: center; gap: 6px;
+              max-width: 100%; min-width: 0; text-align: left;
+              padding: 3px 8px !important; color: var(--lmw-ink) !important; }
+    .lmw-dd:hover:not(:disabled) { color: var(--lmw-accent) !important; }
+    .lmw-dd-text { overflow: hidden; text-overflow: ellipsis;
+                   white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+    .lmw-dd-caret { color: var(--lmw-muted); flex: 0 0 auto; font-size: 11px; }
+
+    /* footer band: item nav, copies, export actions, status */
+    .lmw-foot { display: flex; flex-wrap: wrap; align-items: center;
+                gap: 6px 10px; padding: 7px 10px;
+                background: var(--lmw-head-bg);
+                border-top: 1px solid var(--lmw-border); }
+    .lmw-foot-spacer { flex: 1 0 8px; }
+    .lmw-item-nav { align-items: center; gap: 6px; }
+    .lmw-item-count { color: var(--lmw-muted); font-size: 12px; white-space: nowrap; }
+    .lmw-status { flex-basis: 100%; font-size: 12px; color: var(--lmw-muted); }
+    .lmw-status:empty { display: none; }
     .lmw-bad { color: var(--lmw-bad) !important; }
 
-    .lmw-preview-wrap { margin: 6px 0; }
+    /* preview pane sits beside the controls, wraps below them when narrow */
+    .lmw-preview-pane { flex: 1 1 320px; min-width: 260px;
+                        display: flex; flex-direction: column;
+                        align-items: center; justify-content: center;
+                        padding: 10px 4px; align-self: stretch; }
     .lmw-preview svg { border: 1px dashed var(--lmw-muted);
                        box-shadow: 0 1px 4px rgba(0,0,0,0.18);
-                       background: #fff; }
-    .lmw-caption { font-size: 12px; color: var(--lmw-muted); margin-top: 3px; }
+                       background: #fff; max-width: 100%; }
+    .lmw-caption { font-size: 12px; color: var(--lmw-muted); margin-top: 5px;
+                   text-align: center; }
+
+    /* ── column-picker popover: appended to <body> (portal, like
+       menu_button_widget's .mbw-menu), so it can't inherit the --lmw-*
+       variables scoped to .lmw-root above — colors are hardcoded here
+       with explicit dark overrides, the same self-contained approach. ── */
+    .lmw-menu {
+        position: fixed; z-index: 99999;
+        display: flex; flex-direction: column;
+        max-height: 60vh; overflow-y: auto;
+        font-family: var(--jp-ui-font-family, -apple-system, sans-serif);
+        background: #fff; border: 1px solid #dde3ea;
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(28,39,51,0.14); min-width: 160px;
+        padding: 4px 0;
+    }
+    .lmw-menu .lmw-mi {
+        display: flex; align-items: center; gap: 7px;
+        padding: 6px 12px; margin: 0; cursor: pointer;
+        color: #1c2733; font-size: 13px; white-space: nowrap;
+    }
+    .lmw-menu .lmw-mi:hover { background: #eaf1fe; color: #2563eb; }
+
+    body[data-jp-theme-light="false"] .lmw-menu { background: #262b31; border-color: #3a4149; }
+    body[data-jp-theme-light="false"] .lmw-menu .lmw-mi { color: #d5dbe1; }
+    body[data-jp-theme-light="false"] .lmw-menu .lmw-mi:hover { background: #1c2a3f; color: #5b9dff; }
+    @media (prefers-color-scheme: dark) {
+        body:not([data-jp-theme-light]) .lmw-menu { background: #262b31; border-color: #3a4149; }
+        body:not([data-jp-theme-light]) .lmw-menu .lmw-mi { color: #d5dbe1; }
+        body:not([data-jp-theme-light]) .lmw-menu .lmw-mi:hover { background: #1c2a3f; color: #5b9dff; }
+    }
     """
