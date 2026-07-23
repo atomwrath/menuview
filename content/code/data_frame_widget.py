@@ -1349,6 +1349,10 @@ class DataFrameWidget:
         close_btn = widgets.Button(description='Close', layout=widgets.Layout(width='80px'))
         box = widgets.VBox([close_btn, w])
         def _on_close(b):
+            try:
+                w.flush_settings()   # single deferred write -- see label_maker.py
+            except Exception:
+                pass   # never let a settings-save failure block Close
             self.child_output.clear_output()
         close_btn.on_click(_on_close)
         with self.child_output:

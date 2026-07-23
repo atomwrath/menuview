@@ -117,6 +117,7 @@ import os
 
 import anywidget
 import traitlets
+import sys
 
 SETTINGS_FILE = 'label_settings.json'   # last-used export settings, in cwd
 
@@ -129,8 +130,18 @@ _PERSISTED_TRAITS = (
     'initials',
 )
 
+_IS_PYODIDE = (sys.platform == 'emscripten')
+
+# In-memory fallback for Pyodide -- see _on_persisted_change below for why
+# disk writes are avoided there. Module-level so "last used" still carries
+# from one label to the next within the same kernel session; it just can't
+# survive a full page reload the way the on-disk copy does on Desktop.
+_session_settings = {}
+
 
 def _load_settings():
+    if _IS_PYODIDE:
+        return dict(_session_settings)
     if not os.path.exists(SETTINGS_FILE):
         return {}
     try:
@@ -142,6 +153,9 @@ def _load_settings():
 
 
 def _save_settings(values):
+    if _IS_PYODIDE:
+        _session_settings.update(values)
+        return
     try:
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(values, f, indent=2)
@@ -220,6 +234,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
         # pinned via kwargs), then watch for further changes -- including
         # ones made straight in the browser -- so whatever's on screen
         # when the panel closes is what opens next time.
+        self._settings_dirty = False
         saved = _load_settings()
         for name in _PERSISTED_TRAITS:
             if name in saved and name not in kwargs:
@@ -231,7 +246,20 @@ class LabelMakerWidget(anywidget.AnyWidget):
             self.observe(self._on_persisted_change, names=name)
 
     def _on_persisted_change(self, change):
+        # Just flag dirty here -- cheap, in-memory, can't stall anything.
+        # The actual write is deferred to flush_settings(), called once
+        # when the panel closes, instead of on every single change (every
+        # checkbox click, every Initials keystroke). See the module-level
+        # note on _save_settings for why immediate writes are risky here.
+        self._settings_dirty = True
+
+    def flush_settings(self):
+        """Persist current settings if anything changed since the last
+        flush. Called once from the panel's Close button."""
+        if not self._settings_dirty:
+            return
         _save_settings({name: getattr(self, name) for name in _PERSISTED_TRAITS})
+        self._settings_dirty = False
 
     _esm = r"""
     function render({ model, el }) {
