@@ -148,8 +148,18 @@ class DataFrameWidget:
         self.search_history = []
         self.scale_stack = []    # parallel to search_history; entry[i] = scale active at level i
         self.search_history = []  # Add this line for tracking history
-        self.backbutton = widgets.Button(description='Back', disabled=True)
-        self.backbutton.on_click(self.on_back_click) 
+        self.forward_stack = []        # items undone via Back, redoable via Forward
+        self.forward_scale_stack = []  # parallel to forward_stack; entry[i] = scale active at level i
+        self.backbutton = widgets.Button(
+            description='', icon='arrow-left', tooltip='back',
+            disabled=True, layout=widgets.Layout(width='36px'),
+        )
+        self.backbutton.on_click(self.on_back_click)
+        self.forwardbutton = widgets.Button(
+            description='', icon='arrow-right', tooltip='forward',
+            disabled=True, layout=widgets.Layout(width='36px'),
+        )
+        self.forwardbutton.on_click(self.on_forward_click)
         self.cost_multipliers = [3.0]
         self.widget_mode = widget_mode                       # 'Edit' | 'View' | 'Flatten' — owned by THIS widget
         self.scale_qty_editable = (widget_mode != 'Edit')
@@ -792,8 +802,19 @@ class DataFrameWidget:
             if self not in DataFrameWidget._open_grids:
                 DataFrameWidget._open_grids.append(self)
 
+            # When this is the "view selected below" panel (_selection_controls
+            # set by _selection_view_below), the Create/Replace controls belong
+            # right after the recipe title, as part of the same card -- not a
+            # separate bordered frame above it. The grid's own built-in title
+            # bar is suppressed below (g.title = '') and replaced by this HTML
+            # label, so title + controls + grid all read as one panel. Reuses
+            # .rgw-title from recipe_grid_widget.py's stylesheet, which is
+            # already on the page by the time any child grid exists.
             box_children = []
             if self._selection_controls is not None:
+                box_children.append(widgets.HTML(
+                    value=f"<div class='rgw-title'>{self.last_lookup}</div>"
+                ))
                 box_children.append(self._selection_controls)
             box_children += [self._fast_grid, self.child_output]
             self._fast_box = widgets.VBox(
@@ -810,7 +831,9 @@ class DataFrameWidget:
             g.columns    = cols
             g.rows       = rows
             g.row_flags  = flags
-            g.title      = self.last_lookup
+            # Suppress the grid's built-in title bar when the Python-rendered
+            # title + selection controls above already show it.
+            g.title      = '' if self._selection_controls is not None else self.last_lookup
             g.mode       = self.widget_mode
             # An <input>'s own padding + border (see .rgw input in _css)
             # eats into its text area in a way the label-based width
@@ -1266,7 +1289,7 @@ class DataFrameWidget:
             child._selection_controls = widgets.VBox([
                 widgets.HBox([name_box, qty_box, create_btn, replace_btn]),
                 status_lbl,
-            ], layout=widgets.Layout(border='1px solid #ccc', padding='4px', margin='0 0 4px 0'))
+            ], layout=widgets.Layout(padding='2px 4px 6px 4px'))
 
         with self.child_output:
             self.child_output.clear_output()
@@ -2154,6 +2177,10 @@ class DataFrameWidget:
         self._pending_lookup_quantity = None
  
         if len(self.search_history) > 1:
+            # Stash the item we're leaving (and its scale) so Forward can redo it.
+            self.forward_stack.append(self.search_history[-1])
+            self.forward_scale_stack.append(self.scale_stack[-1] if self.scale_stack else None)
+
             self.search_history.pop()
             if self.scale_stack:
                 self.scale_stack.pop()
@@ -2172,6 +2199,44 @@ class DataFrameWidget:
             self.search_history = saved_history
             self.scale_stack    = saved_stack
             self.backbutton.disabled = len(self.search_history) <= 1
+            self.forwardbutton.disabled = len(self.forward_stack) == 0
+            if self.widget_mode == 'Flatten':
+                self._render_flattened()
+            else:
+                self.update_display()
+            self._navigating_back = False
+
+    def on_forward_click(self, button):
+        '''Redo a navigation previously undone via on_back_click, moving
+        forward through history in the direction opposite of Back.
+
+        Mirrors on_back_click: restores the scale_factor that was active when
+        the item was originally visited, and reuses the _navigating_back flag
+        so DataFrameExplorer.update_search treats this like a Back click --
+        preserve the restored scale, don't force out of Flatten mode -- since
+        Forward is just history navigation in the other direction.
+        '''
+        self._pending_lookup_quantity = None
+
+        if self.forward_stack:
+            nxt = self.forward_stack.pop()
+            nxt_scale = self.forward_scale_stack.pop() if self.forward_scale_stack else None
+
+            self.search_history.append(nxt)
+            self.scale_stack.append(nxt_scale)
+            self.scale_factor = nxt_scale
+
+            # Signal update_search (if it fires) to preserve this scale
+            self._navigating_back = True
+
+            saved_history = self.search_history.copy()
+            saved_stack   = self.scale_stack.copy()
+
+            self.setdf(nxt)                # uses the just-restored scale_factor
+            self.search_history = saved_history
+            self.scale_stack    = saved_stack
+            self.backbutton.disabled    = len(self.search_history) <= 1
+            self.forwardbutton.disabled = len(self.forward_stack) == 0
             if self.widget_mode == 'Flatten':
                 self._render_flattened()
             else:
@@ -2529,13 +2594,18 @@ class DataFrameWidget:
         
         # Mirror scale_factor into scale_stack whenever a new entry is pushed.
         # scale_factor has already been set by DataFrameExplorer.update_search
-        # (or left unchanged by on_back_click) before lookup_name is called.
+        # (or left unchanged by on_back_click/on_forward_click) before lookup_name is called.
         if not self.search_history or lookup != self.search_history[-1]:
             self.search_history.append(lookup)
             self.scale_stack.append(self.scale_factor)
+            # A fresh navigation invalidates any redo history captured by
+            # earlier Back clicks.
+            self.forward_stack.clear()
+            self.forward_scale_stack.clear()
         
-        # Update back button state
+        # Update back/forward button state
         self.backbutton.disabled = len(self.search_history) <= 1
+        self.forwardbutton.disabled = len(self.forward_stack) == 0
 
     def get_widget(self):
         return(self.grid)

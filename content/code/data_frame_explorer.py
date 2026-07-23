@@ -134,8 +134,9 @@ class DataFrameExplorer:
         self.df_widget.mode_changed_callback   = self._on_root_mode_changed
         self.df_widget.delete_confirm_callback = self.on_delete_confirm_needed
         self.df_widget.guide_changed_callback = self.refresh_search_options
-        # Get reference to the back button
+        # Get reference to the back/forward buttons
         self.backbutton = self.df_widget.backbutton
+        self.forwardbutton = self.df_widget.forwardbutton
         self.progress_bar = self.df_widget.progress_bar
 
         # Add menu buttons
@@ -147,7 +148,7 @@ class DataFrameExplorer:
         
         topdisplay = widgets.VBox([
             self.menubutton_hbox,
-            widgets.HBox([self.backbutton, self.searchinput, self.sheet_menu, self.renamebutton]),
+            widgets.HBox([self.backbutton, self.forwardbutton, self.searchinput, self.sheet_menu, self.renamebutton]),
             self.rename_dialog,
             self.delete_confirm_dialog,
             self.dfdisplay
@@ -861,6 +862,9 @@ class DataFrameExplorer:
             # old_name no longer exists anywhere — fix up history
             self.df_widget.search_history = [
                 new_name if h == old_name else h for h in self.df_widget.search_history
+            ]
+            self.df_widget.forward_stack = [
+                new_name if h == old_name else h for h in self.df_widget.forward_stack
             ]
         # for a duplicate, old_name is still valid and untouched — just
         # navigate to the freshly created copy

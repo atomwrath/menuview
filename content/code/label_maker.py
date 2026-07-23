@@ -316,7 +316,13 @@ class LabelMakerWidget(anywidget.AnyWidget):
       function layout(fontPx) {
         const W = model.get("width_in") * PX_PER_IN;
         const H = model.get("height_in") * PX_PER_IN;
-        const pad = Math.max(Math.min(W, H) * 0.055, 5);
+        // Padding scales with the label's smaller dimension (so small
+        // labels get proportionally tight margins) but is capped at a
+        // fixed 0.125in regardless of how large the label gets -- without
+        // this, a big label like 4x6 (smaller dimension = 4in) ends up
+        // with a ~0.22in margin, literally double every other preset's,
+        // just because its "smaller dimension" is itself already large.
+        const pad = Math.min(Math.max(Math.min(W, H) * 0.055, 5), PX_PER_IN * 0.125);
         const innerW = W - 2 * pad;
         const cols = (model.get("columns") || [])
           .filter((c) => (model.get("all_columns") || []).includes(c));
