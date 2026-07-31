@@ -52,13 +52,32 @@ Item dicts
     'disabled' optional, bool (default False) -- greys the item out and
                makes it unclickable, same as recipe_grid_widget.py's
                disabled Paste entry when there's nothing to paste.
+    'copy'     optional, bool (default False) -- clicking also writes the
+               clipboard_text trait to the *system* clipboard, browser-
+               side (see Clipboard below).
 
 items is a plain kernel -> browser trait (read-only from the browser's
 side); update it with widget.items = [...] to change the menu contents,
 e.g. to disable an item once some precondition stops holding.
 
+Clipboard
+    A kernel-side pandas df.to_clipboard() can't work under Pyodide (it
+    shells out to a native pbcopy/xclip helper), so system-clipboard
+    writes happen in the browser instead. They also can't happen on
+    receipt of a menu_action, because navigator.clipboard.writeText needs
+    transient user activation and a kernel round trip can outlive it. So:
+    opening a menu that contains any {copy: True} item sends menu_open,
+    the kernel answers by setting clipboard_text, and the later click on
+    the item writes that already-present text synchronously. The
+    menu_action message reports whether that write actually happened
+    (`copied`), so a host that has a working kernel-side path can use it
+    as a fallback on the first, not-yet-primed open.
+
 Messages (browser -> kernel), via model.send:
-    {type: "menu_action", action: <str>}   -- a non-disabled item was clicked
+    {type: "menu_open"}                    -- a menu with a copy item opened;
+                                              refresh clipboard_text now
+    {type: "menu_action", action: <str>, copied: <bool>}
+                                           -- a non-disabled item was clicked
 """
 
 import anywidget
@@ -67,6 +86,7 @@ import traitlets
 
 class MenuButtonWidget(anywidget.AnyWidget):
     items = traitlets.List(traitlets.Dict()).tag(sync=True)
+    clipboard_text = traitlets.Unicode('').tag(sync=True)   # see the copy note in _esm
 
     _esm = r"""
     function render({ model, el }) {
@@ -77,6 +97,40 @@ class MenuButtonWidget(anywidget.AnyWidget):
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
       let menuEl = null;
+
+      // System-clipboard write for {copy: true} items. Runs synchronously
+      // inside the click handler because navigator.clipboard.writeText
+      // needs transient user activation, which a kernel round trip can
+      // outlive -- and under Pyodide there's no pandas to_clipboard to
+      // fall back on anyway (it wants a native pbcopy/xclip helper), so
+      // the kernel simply cannot do this in JupyterLite. The text comes
+      // from the clipboard_text trait, which the kernel refreshes on the
+      // menu_open message openMenu sends -- i.e. it's already in the
+      // browser by the time an item can be clicked.
+      function legacyCopy(text) {
+        // Deprecated, but still the only path that works outside a secure
+        // context (a plain http:// host), where navigator.clipboard is
+        // simply undefined.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+        ta.remove();
+        return ok;
+      }
+      function copyToSystemClipboard() {
+        const text = model.get("clipboard_text") || "";
+        if (!text) return false;   // not primed yet -- reported back so Python can try instead
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+          return true;
+        }
+        return legacyCopy(text);
+      }
 
       function closeMenu() {
         if (menuEl) { menuEl.remove(); menuEl = null; }
@@ -91,6 +145,10 @@ class MenuButtonWidget(anywidget.AnyWidget):
       function openMenu(btn) {
         closeMenu();
         const items = model.get("items") || [];
+        // Give the kernel a chance to refresh clipboard_text before any
+        // {copy: true} item can be clicked. Only sent when there's such an
+        // item, so menus that don't copy anything stay chatter-free.
+        if (items.some((it) => it && it.copy)) model.send({ type: "menu_open" });
         menuEl = document.createElement("div");
         menuEl.className = "mbw-menu";
         menuEl.innerHTML = items.map((it, i) =>
@@ -101,7 +159,8 @@ class MenuButtonWidget(anywidget.AnyWidget):
             ev.stopPropagation();
             const it = items[+b.dataset.i];
             if (!it || it.disabled) return;   // true no-op -- menu stays open, matching a disabled control
-            model.send({ type: "menu_action", action: it.action });
+            const copied = it.copy ? copyToSystemClipboard() : false;
+            model.send({ type: "menu_action", action: it.action, copied });
             closeMenu();
           }));
 

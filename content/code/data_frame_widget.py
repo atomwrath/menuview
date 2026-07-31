@@ -132,6 +132,10 @@ class DataFrameWidget:
                                                 # tells update_search not to clear scale
         self._pending_insert = None        # (anchor_ingredient, 'before'|'after') awaiting a mid-list slot
         self._pending_insert_name = None   # ingredient name to pre-fill that slot with, or None for a blank slot # row index -> delete Button widget, for direct enable/disable
+        self.recipe_changed_callback = None   # fired with the recipe name whenever a recipe's
+                                              # ingredient membership changes (add/remove/rename);
+                                              # DataFrameExplorer uses it to keep the fullmenu
+                                              # shortcut buttons in sync
         self.child_widget = None       # currently-open nested "view below" widget, or None
         self.child_ingredient = None   # name of the ingredient the child is showing
         self.child_output = widgets.Output()   # persistent Output the child renders into
@@ -396,6 +400,18 @@ class DataFrameWidget:
  
         return mydf
         
+    def _notify_recipe_changed(self, recipename):
+        '''Announce that recipename's ingredient list changed. Call this right
+        after the cc mutation, not after update_display -- the listener reads
+        cc state, and keeping the call adjacent to the mutation is what makes
+        it obvious at each site whether it's been done.
+        '''
+        if self.recipe_changed_callback is not None:
+            try:
+                self.recipe_changed_callback(recipename)
+            except Exception as exc:
+                print(f'[recipe changed] {exc}')
+
     def _next_committed_anchor(self, recipename, start_index):
         ''' Scan self.df forward from start_index for the next already-
             committed ingredient — used to position a newly-inserted row
@@ -415,6 +431,7 @@ class DataFrameWidget:
         '''
         snap = self._last_deleted
         self.cc.insert_ingredient(recipename, ingredient_name, snap.get('quantity', ''), before=anchor)
+        self._notify_recipe_changed(recipename)
         if 'menu price' in self.cc.costdf.columns and snap.get('menu price', '') not in ('', None):
             self.cc.set_item_ingredient(recipename, ingredient_name, 'menu price', snap.get('menu price'))
         if 'note' in self.cc.costdf.columns and snap.get('note', '') not in ('', None):
@@ -1136,6 +1153,7 @@ class DataFrameWidget:
         if cut:
             for name in names:
                 self.cc.removeIngredient(recipename, name)
+            self._notify_recipe_changed(recipename)
             self.cc.clear_cost(recipename)
             self.cc.recipe_cost(recipename)
 
@@ -1167,6 +1185,7 @@ class DataFrameWidget:
                 print(f'[paste] "{name}" is already in this recipe — skipped')
                 continue
             self.cc.insert_ingredient(recipename, name, r.get('quantity', ''), before=anchor)
+            self._notify_recipe_changed(recipename)
             if r.get('menu price', '') not in ('', None):
                 self.cc.set_item_ingredient(recipename, name, 'menu price', r['menu price'])
             if r.get('note', '') not in ('', None):
@@ -1272,6 +1291,7 @@ class DataFrameWidget:
                 try:
                     self.cc.create_recipe_from_rows(recipename, names, new_name,
                                                      batch_quantity=qty, replace_in_source=True)
+                    self._notify_recipe_changed(recipename)
                 except ValueError as exc:
                     status_lbl.value = f'[replace] {exc}'
                     return
@@ -1837,6 +1857,31 @@ class DataFrameWidget:
         def _clear_costs(nickname):
             self._clear_ingredient_costs(nickname)
             
+        def _update_guide_row(index, row, update_column, new_value):
+            '''Write one guide cell, targeting the row by its real uni_g index.
+
+            Prefers _guide_row_index_map (the same mechanism on_delete_click
+            uses, and for the same reason) over defmatch value-matching:
+            defmatch covers nickname/description/size/price/date/supplier, so
+            two entries differing only in number, unit, or brand match each
+            other and a defmatch write would hit both. Falls back to defmatch
+            when no index was recorded for this display row.
+
+            Also guards the dtype: writing a str into a column pandas inferred
+            as float64 (an all-NaN brand column, or numeric product numbers
+            read from Excel) otherwise trips the incompatible-dtype warning.
+            '''
+            if isinstance(new_value, str) and update_column in self.cc.uni_g.columns:
+                if self.cc.uni_g[update_column].dtype != object:
+                    self.cc.uni_g[update_column] = self.cc.uni_g[update_column].astype(object)
+
+            uidx = self._guide_row_index_map.get(index)
+            if uidx is not None and uidx in self.cc.uni_g.index:
+                self.cc.uni_g.loc[uidx, update_column] = new_value
+                self.cc.mark_guide_dirty()
+            else:
+                _update_df(self.cc.uni_g, row, defmatch, update_column, new_value)
+
         defmatch = ['nickname', 'description', 'size', 'price', 'date', 'supplier']
         oldval = self.df.iloc[index][column]
             
@@ -1863,6 +1908,7 @@ class DataFrameWidget:
 
                         anchor = self._next_committed_anchor(recipename, index + 1)
                         self.cc.insert_ingredient(recipename, ingredient_name, newval, before=anchor)
+                        self._notify_recipe_changed(recipename)
                         self._pending_insert = None
                         self._pending_insert_name = None
 
@@ -1952,6 +1998,7 @@ class DataFrameWidget:
                         if newval != oldval:
                             try:
                                 self.cc.replace_ingredient(recipename, oldval, newval)
+                                self._notify_recipe_changed(recipename)
                             except ValueError as e:
                                 print(e)
                                 widget.style.text_color = 'red'
@@ -1987,6 +2034,7 @@ class DataFrameWidget:
                                     'note': r.get('note', ''),
                                 }
                             self.cc.removeIngredient(recipename, oldval)
+                            self._notify_recipe_changed(recipename)
                             self.cc.clear_cost(recipename)
                             self.cc.recipe_cost(recipename)
                             self.setdf(recipename)
@@ -2123,6 +2171,36 @@ class DataFrameWidget:
                 self.update_display()
                 # update mention display?
                     
+        elif column == 'number':
+            if self.df_type == 'guide':
+                row = self.df.iloc[index]
+                # Kept as a string, always: product numbers carry leading
+                # zeros and non-digit characters, and order_creator matches
+                # options on (supplier, number).
+                _update_guide_row(index, row, 'number', str(newval).strip())
+                self.setdf(row['nickname'])
+                self.update_display()
+
+        elif column == 'unit':
+            if self.df_type == 'guide':
+                row = self.df.iloc[index]
+                # unit IS priced on: a row whose unit is 'lb' is costed per
+                # pound regardless of size (see CostCalculator's pricing and
+                # order_guide_reader._rate_for_row), so every recipe using
+                # this ingredient needs its cached cost dropped -- unlike
+                # description/brand/allergen, which are display-only.
+                _update_guide_row(index, row, 'unit', str(newval).strip())
+                _clear_costs(row['nickname'])
+                self.setdf(row['nickname'])
+                self.update_display()
+
+        elif column == 'brand':
+            if self.df_type == 'guide':
+                row = self.df.iloc[index]
+                _update_guide_row(index, row, 'brand', str(newval).strip())
+                self.setdf(row['nickname'])
+                self.update_display()
+
         elif column == 'allergen':
             if self.df_type == 'guide':
                 row = self.df.iloc[index]
@@ -2502,14 +2580,27 @@ class DataFrameWidget:
         with self.child_output:
             self.child_output.clear_output()
             
+    def _refresh_keep_mode(self):
+        '''Re-render THIS widget's grid without changing widget_mode.
+
+        Flatten's self.df is built by _render_flattened, not by setdf -- so a
+        plain setdf/update_display silently swaps the flattened rows for the
+        ordinary recipe listing while the mode dropdown still reads "Flatten".
+        Any re-render that is not itself a mode change must go through here.
+        '''
+        if self.widget_mode == 'Flatten':
+            self._render_flattened()
+        else:
+            self.setdf(self.last_lookup)
+            self.update_display()
+
     def on_view_below_click(self, button):
         row = self.df.loc[button.tag]
         ingredient_name = row['ingredient']
 
         if self.child_widget is not None and self.child_ingredient == ingredient_name:
             self.close_child()
-            self.setdf(self.last_lookup)
-            self.update_display()
+            self._refresh_keep_mode()
             return
 
         is_subrecipe  = not self.cc.get_recipe_entry(ingredient_name).empty
@@ -2539,8 +2630,7 @@ class DataFrameWidget:
         self.child_widget     = child
         self.child_ingredient = ingredient_name
 
-        self.setdf(self.last_lookup)
-        self.update_display()
+        self._refresh_keep_mode()
 
         if is_subrecipe:
             # Scale to how much of it THIS recipe uses, not its own default yield —

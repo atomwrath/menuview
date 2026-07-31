@@ -35,6 +35,11 @@ Selection
     cell grows a small menu button (⋮) offering Copy / Cut / Paste / View
     selected below. Creating a new recipe from a selection now happens from
     buttons on the "view selected below" display rather than from this menu.
+    Copy and Cut additionally write the selected rows to the *system*
+    clipboard as TSV (browser-side, in the click gesture — see
+    copyToSystemClipboard in the ESM), so a selection can be pasted
+    straight into a spreadsheet, in parallel with the kernel-side
+    DataFrameWidget._clipboard that drives in-app Paste.
 
 Font size
     Everything scales off one CSS variable, --rgw-font-size (default 16px),
@@ -192,18 +197,40 @@ class RecipeGridWidget(anywidget.AnyWidget):
                     border: 1px solid var(--rgw-accent-bord);
                     background: var(--rgw-accent-soft);
                     color: var(--rgw-accent); cursor: pointer; }
-    .rgw-menu { position: absolute; z-index: 20; display: flex; flex-direction: column;
-                background: var(--jp-layout-color1, #fff);
-                border: 1px solid var(--rgw-border);
+    /* .rgw-menu is appended straight to <body> when open (see openMenu()
+       in the ESM below) so an ancestor's overflow:hidden can't clip it and
+       it can't lose a stacking fight with a sibling Output area. That also
+       puts it outside .rgw-root's subtree, so the --rgw-* variables above
+       no longer resolve for it -- colors are hardcoded here instead, with
+       an explicit dark override, matching menu_button_widget.py's
+       .mbw-menu. font-size is absolute for the same reason (em would
+       resolve against <body>, not the grid). */
+    .rgw-menu { position: fixed; z-index: 10000; display: flex; flex-direction: column;
+                font-family: var(--jp-ui-font-family, -apple-system, sans-serif);
+                font-size: 13px;
+                background: #fff; color: #1c2733;
+                border: 1px solid #dde3ea;
                 border-radius: 8px; overflow: hidden;
                 box-shadow: 0 4px 16px rgba(28,39,51,0.14); min-width: 160px; }
     .rgw-menu button { text-align: left; padding: 6px 10px; border: none; background: none;
                        border-radius: 0; margin: 0;
-                       color: var(--rgw-ink); font-size: 0.85em; cursor: pointer;
+                       color: inherit; font: inherit; cursor: pointer;
                        width: 100%; }
-    .rgw-menu button:hover:not(:disabled) { background: var(--rgw-accent-soft);
-                                            color: var(--rgw-accent); }
+    .rgw-menu button:hover:not(:disabled) { background: #eaf1fe; color: #2563eb; }
     .rgw-menu button:disabled { opacity: 0.4; cursor: default; }
+
+    body[data-jp-theme-light="false"] .rgw-menu {
+        background: #21262c; color: #d5dbe1; border-color: #3a4149;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.45); }
+    body[data-jp-theme-light="false"] .rgw-menu button:hover:not(:disabled) {
+        background: #1c2a3f; color: #5b9dff; }
+    @media (prefers-color-scheme: dark) {
+        body:not([data-jp-theme-light]) .rgw-menu {
+            background: #21262c; color: #d5dbe1; border-color: #3a4149;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.45); }
+        body:not([data-jp-theme-light]) .rgw-menu button:hover:not(:disabled) {
+            background: #1c2a3f; color: #5b9dff; }
+    }
     .rgw-menu-form { display: flex; flex-direction: column; padding: 6px 8px; gap: 4px; }
     .rgw-menu-form label { font-size: 0.8em; color: var(--rgw-muted);
                            display: flex; flex-direction: column; gap: 2px; }
@@ -326,6 +353,10 @@ class RecipeGridWidget(anywidget.AnyWidget):
           html += `</tr>`;
         });
         html += `</tbody></table>`;
+        // The open menu now lives on <body>, so el.innerHTML no longer
+        // sweeps it away -- it would dangle over the redrawn grid with a
+        // stale row anchor. Close it first.
+        closeMenu();
         el.innerHTML = html;
 
         // ── event wiring ──────────────────────────────────────────────────
@@ -418,20 +449,80 @@ class RecipeGridWidget(anywidget.AnyWidget):
         });
       }
 
+      // The open menu is portalled to <body> rather than kept as a
+      // descendant of el, so menuEl (not el.querySelector) is the handle.
+      let menuEl = null;
+
+      // ── system-clipboard export for Copy / Cut ───────────────────────
+      // Built from the `columns`/`rows` traits (what's actually on screen)
+      // and written synchronously inside the menu item's own click
+      // handler -- not from the kernel after a round trip.
+      // navigator.clipboard.writeText needs transient user activation and
+      // a kernel round trip can outlive it; and under Pyodide there's no
+      // pandas to_clipboard to fall back on at all (it wants a native
+      // pbcopy/xclip helper), so the top-level "Copy sheet" path isn't
+      // reusable here. Doing it in the gesture works identically in
+      // JupyterLab Desktop and JupyterLite.
+      function selectionTSV() {
+        const cols  = model.get("columns")   || [];
+        const rows  = model.get("rows")      || [];
+        const flags = model.get("row_flags") || [];
+        const sel = (model.get("selected_rows") || [])
+          .filter((i) => i >= 0 && i < rows.length
+                         && !(flags[i] || {}).header && !(flags[i] || {}).add_row)
+          .sort((a, b) => a - b);
+        if (!sel.length) return "";
+        // Skip the item column: on every non-header row it's the blank
+        // selection-handle cell, so it'd just be an empty TSV column.
+        const keep = cols.map((c, j) => j).filter((j) => String(cols[j]) !== "item");
+        // NB: _esm is a plain (non-raw) Python string, so every backslash
+        // meant for JavaScript has to be doubled here -- same reason
+        // _css writes content: "\\22EE" for the handle glyph. Written
+        // singly, Python turns these into literal tab/CR/LF characters
+        // and the JS arrives with an unterminated string and regex.
+        const clean = (s) => String(s ?? "").replace(/[\\t\\r\\n]+/g, " ").trim();
+        const lines = [keep.map((j) => clean(cols[j])).join("\\t")];
+        for (const i of sel)
+          lines.push(keep.map((j) => clean((rows[i][j] || {}).v)).join("\\t"));
+        return lines.join("\\n");
+      }
+
+      function legacyCopy(text) {
+        // document.execCommand("copy") is deprecated, but it's still the
+        // only path that works outside a secure context (a plain http://
+        // host), where navigator.clipboard is simply undefined.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch (e) { /* nothing left to try */ }
+        ta.remove();
+      }
+
+      function copyToSystemClipboard() {
+        const text = selectionTSV();
+        if (!text) return;   // header-only / empty selection: leave whatever's already there
+        if (navigator.clipboard && navigator.clipboard.writeText)
+          navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+        else
+          legacyCopy(text);
+      }
+
       function closeMenu() {
-        el.querySelector(".rgw-menu")?.remove();
+        if (menuEl) { menuEl.remove(); menuEl = null; }
         document.removeEventListener("pointerdown", onOutsideClick, true);
+        window.removeEventListener("resize", closeMenu);
+        window.removeEventListener("scroll", closeMenu, true);
       }
       function onOutsideClick(e) {
-        if (!e.target.closest(".rgw-menu") && !e.target.closest(".rgw-menu-btn")) closeMenu();
+        if (menuEl && !menuEl.contains(e.target) && !e.target.closest(".rgw-menu-btn")) closeMenu();
       }
       function openMenu(btn) {
         closeMenu();
-        const r = btn.getBoundingClientRect(), rootR = el.getBoundingClientRect();
         const menu = document.createElement("div");
         menu.className = "rgw-menu";
-        menu.style.left = (r.left - rootR.left) + "px";
-        menu.style.top  = (r.bottom - rootR.top + 3) + "px";
         const hasClip = model.get("has_clipboard");
 
         const renderActions = () => {
@@ -455,14 +546,46 @@ class RecipeGridWidget(anywidget.AnyWidget):
           menu.querySelectorAll("button[data-action]").forEach((b) =>
             b.addEventListener("click", (ev) => {
               ev.stopPropagation();
-              model.send({ type: "selection_action", action: b.dataset.action });
+              const act = b.dataset.action;
+              // Copy/Cut also put the selection on the *system* clipboard
+              // as TSV, matching the top-level "Copy sheet" action. Runs
+              // before the kernel round trip -- for Cut especially, since
+              // the kernel is about to delete these rows.
+              if (act === "copy" || act === "cut") copyToSystemClipboard();
+              model.send({ type: "selection_action", action: act });
               closeMenu();
             }));
         };
 
         renderActions();
-        el.appendChild(menu);
+
+        // Appended to <body> (a "portal"), positioned from the button's
+        // real screen coords -- getBoundingClientRect is viewport-relative
+        // regardless of scrolled/transformed ancestors. Rendered invisible
+        // first so its natural height can be measured before deciding
+        // whether it fits below the button or has to flip above it.
+        menuEl = menu;
+        menu.style.visibility = "hidden";
+        document.body.appendChild(menu);
+
+        const r = btn.getBoundingClientRect();
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
+        const vw = window.innerWidth, vh = window.innerHeight;
+
+        let top = r.bottom + 3;
+        if (top + mh > vh && r.top - mh - 3 >= 0) top = r.top - mh - 3;   // flip up
+        let left = r.left;
+        if (left + mw > vw) left = Math.max(0, vw - mw - 4);              // clamp right edge
+
+        menu.style.top = `${Math.max(0, Math.min(top, vh - mh - 4))}px`;
+        menu.style.left = `${Math.max(0, left)}px`;
+        menu.style.visibility = "visible";
+
         document.addEventListener("pointerdown", onOutsideClick, true);
+        // No reposition-on-scroll; just close, same as any other outside
+        // interaction (matches menu_button_widget.py).
+        window.addEventListener("resize", closeMenu);
+        window.addEventListener("scroll", closeMenu, true);
       }
 
       // Coalesce multi-trait updates into one repaint per message batch.

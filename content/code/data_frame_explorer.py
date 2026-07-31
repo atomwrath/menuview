@@ -38,7 +38,7 @@ class DataFrameExplorer:
         self.excel_filename = 'amc_menu_database.xlsx'
         
         # Store original enabled columns for switching between modes
-        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number', 'note']
+        self.all_enabled_columns = ['ingredient', 'quantity', 'price', 'menu price', 'size', 'date', 'supplier', 'description', 'allergen', 'conversion', 'order', 'number', 'unit', 'brand', 'note']
         self.enabled_columns = self.all_enabled_columns.copy()
         self.hide_columns = ['note', 'conversion', 'equ quant', 'menu price']
         self.cc = cc
@@ -66,18 +66,33 @@ class DataFrameExplorer:
         )        
         self.searchinput.observe(self.update_search, names='value')
 
-       # "..." menu: copy the current sheet to clipboard, or make a
+        # "..." menu: copy the current sheet to clipboard, or make a
         # printable label for the currently loaded recipe. Replaces the
         # old always-visible "copy sheet" button now that there's a
         # second action to offer alongside it.
         self.sheet_menu = MenuButtonWidget(items=[
-            {'action': 'copy_sheet', 'label': 'Copy sheet'},
+            {'action': 'copy_sheet', 'label': 'Copy sheet', 'copy': True},
             {'action': 'create_label', 'label': 'Make label…'},
         ])
         def _on_sheet_menu(widget, content, buffers):
-            action = content.get('action') if content.get('type') == 'menu_action' else None
+            msg_type = content.get('type')
+            if msg_type == 'menu_open':
+                # Re-snapshot the sheet every time the menu opens, so the
+                # browser has fresh text ready the instant Copy sheet is
+                # clicked (see MenuButtonWidget's Clipboard note).
+                self.sheet_menu.clipboard_text = self._sheet_tsv()
+                return
+            action = content.get('action') if msg_type == 'menu_action' else None
             if action == 'copy_sheet':
-                self.df_widget.df.to_clipboard()
+                if not content.get('copied'):
+                    # The browser had nothing primed yet (first open, or the
+                    # round trip lost the race). to_clipboard() still works
+                    # in JupyterLab Desktop; under Pyodide there's no native
+                    # helper behind it, so say so rather than traceback.
+                    try:
+                        self.df_widget.df.to_clipboard()
+                    except Exception:
+                        print('[copy sheet] clipboard not ready — open the menu again')
             elif action == 'create_label':
                 # No row selection at this level -- the label opens showing
                 # just the title/subtitle info (yield, cost, etc.); "Whole
@@ -134,6 +149,7 @@ class DataFrameExplorer:
         self.df_widget.mode_changed_callback   = self._on_root_mode_changed
         self.df_widget.delete_confirm_callback = self.on_delete_confirm_needed
         self.df_widget.guide_changed_callback = self.refresh_search_options
+        self.df_widget.recipe_changed_callback = self.on_recipe_changed
         # Get reference to the back/forward buttons
         self.backbutton = self.df_widget.backbutton
         self.forwardbutton = self.df_widget.forwardbutton
@@ -289,6 +305,33 @@ class DataFrameExplorer:
         self._refresh_rename_button()
 
 
+    def refresh_menu_buttons(self):
+        '''Rebuild the fullmenu shortcut buttons, but only if fullmenu's child
+        list actually changed.
+
+        Diff-guarded because this is called after every recipe membership edit:
+        rebuilding unconditionally would discard and recreate every Button on
+        each edit, and _build_menu_buttons re-appends self.progress_bar, so a
+        rebuild mid-render would swap the progress bar out from under whatever
+        is currently using it.
+        '''
+        try:
+            menulist = list(self.cc.get_children('fullmenu'))
+        except (KeyError, AttributeError):
+            menulist = []
+        if menulist == getattr(self, '_menu_button_names', None):
+            return
+        self.menubutton_hbox.children = tuple(self._build_menu_buttons())
+
+    def on_recipe_changed(self, recipename):
+        '''A recipe's ingredient membership changed in the grid (add / remove /
+        rename). Only fullmenu drives Explorer-owned chrome, but the widget
+        stays generic and reports every recipe -- the "which recipe is special"
+        knowledge lives here, where the buttons do.
+        '''
+        if str(recipename).strip() == 'fullmenu':
+            self.refresh_menu_buttons()
+
     def _activate_view_mode(self):
         if self.df_widget.widget_mode != 'Edit':
             return
@@ -350,6 +393,33 @@ class DataFrameExplorer:
 
         self.searchinput.value = iname
         
+    def _sheet_tsv(self):
+        '''The currently displayed sheet as TSV, for the system clipboard.
+
+        Mirrors what's on screen rather than the raw frame: hide_columns
+        are dropped, and any tab/newline inside a value is scrubbed to a
+        space — left in, they'd shift the column count of that one line
+        and misalign everything downstream when pasted into a spreadsheet.
+        Returns '' when nothing's loaded, which the browser side reads as
+        "don't touch the clipboard at all".
+        '''
+        df = self.df_widget.df
+        if df is None or df.empty:
+            return ''
+        hidden = set(self.df_widget.hide_columns or [])
+        cols = [c for c in df.columns if c not in hidden]
+        if not cols:
+            return ''
+
+        def clean(v):
+            s = '' if pd.isna(v) else str(v)
+            return s.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ').strip()
+
+        lines = ['\t'.join(clean(c) for c in cols)]
+        for _, row in df[cols].iterrows():
+            lines.append('\t'.join(clean(row[c]) for c in cols))
+        return '\n'.join(lines)
+
     def refresh_search_options(self):
         nicks = set(self.cc.uni_g['nickname'].dropna().unique())
         ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
@@ -610,6 +680,10 @@ class DataFrameExplorer:
             menulist = self.cc.get_children('fullmenu')
         except (KeyError, AttributeError):
             menulist = []
+
+        # Remember what this set of buttons reflects, so refresh_menu_buttons
+        # can skip the rebuild when nothing about fullmenu actually changed.
+        self._menu_button_names = list(menulist)
 
         menubuttons = []
         for menu in menulist:
