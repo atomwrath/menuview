@@ -16,14 +16,19 @@ separate dark handling lives in this file.
 Messages (browser -> kernel), via model.send:
     {type:"reload_database"}
     {type:"write_database"}
-    {type:"confirm_write"}                 -- "file doesn't exist, save as?" confirmed
+    {type:"confirm_action", action}        -- banner confirmed; action is the token
+                                              the kernel sent with db_confirm
+                                              ("write" | "reload" | "blank")
     {type:"refresh_database_files"}        -- caret clicked open; rescan cwd for .xlsx files
     {type:"create_recipe", value}
     {type:"create_ingredient", value}
 
 Messages (kernel -> browser), via widget.send:
     {type:"db_error",   message}            -- red banner, no confirm button
-    {type:"db_confirm", message}            -- amber banner, Confirm + Cancel
+    {type:"db_confirm", message, action, confirm_label, danger}
+                                            -- Confirm + Cancel banner; red when
+                                               danger is true, amber otherwise.
+                                               action is echoed back on confirm.
     {type:"create_error", target, message}  -- target: "recipe" | "ingredient"
                                                 small red text under that field
 
@@ -46,6 +51,8 @@ import traitlets
 
 class ToolbarWidget(anywidget.AnyWidget):
     database_filename = traitlets.Unicode('').tag(sync=True)
+    loaded_filename   = traitlets.Unicode('').tag(sync=True)   # kernel sets this; JS only reads it
+    dirty             = traitlets.Bool(False).tag(sync=True)   # kernel sets this; JS only reads it
     file_exists        = traitlets.Bool(True).tag(sync=True)   # kernel sets this; JS only reads it
     database_files      = traitlets.List(traitlets.Unicode()).tag(sync=True)  # kernel sets this; JS only reads it
 
@@ -87,6 +94,13 @@ class ToolbarWidget(anywidget.AnyWidget):
         background: var(--mv-surface, #fff); color: var(--mv-ink, #1c2733);
     }
     .tbw-dbseg input:focus { outline: none; background: var(--mv-accent-soft, #eaf1fe); }
+    /* target filename is not the database that's actually loaded */
+    .tbw-dbseg input.tbw-differs {
+        background: var(--mv-warn-soft, #fff7e0);
+        color: var(--mv-warn-ink, #8a6415);
+        font-style: italic;
+    }
+    .tbw-dbseg input.tbw-dirty { font-weight: 700; }
     .tbw-dbseg input.tbw-invalid { color: var(--mv-danger, #c0392b) !important; }
     .tbw-dbseg button {
         border: none; border-left: 1px solid var(--mv-border, #dde3ea);
@@ -316,15 +330,31 @@ class ToolbarWidget(anywidget.AnyWidget):
       const syncDbFile = () => {
         if (document.activeElement !== dbfile) dbfile.value = model.get("database_filename") || "";
       };
-      const syncFileExists = () => {
+      // Target-vs-loaded and dirty state, shown on the field itself: the box
+      // doubles as "file to load" and "file to save to", so it has to say out
+      // loud when those two have drifted apart.
+      const syncDbState = () => {
+        const target = (model.get("database_filename") || "").trim();
+        const loaded = (model.get("loaded_filename") || "").trim();
+        const dirty  = !!model.get("dirty");
+        const differs = !!target && !!loaded && target !== loaded;
         dbfile.classList.toggle("tbw-invalid", model.get("file_exists") === false);
+        dbfile.classList.toggle("tbw-differs", differs);
+        dbfile.classList.toggle("tbw-dirty", dirty);
+        dbfile.title = differs
+          ? "not the loaded database — loaded: " + loaded + (dirty ? " (unsaved changes)" : "")
+          : (dirty ? "database file — unsaved changes" : "database file");
       };
-      syncDbFile(); syncFileExists();
+      syncDbFile(); syncDbState();
       model.on("change:database_filename", syncDbFile);
-      model.on("change:file_exists", syncFileExists);
+      model.on("change:database_filename", syncDbState);
+      model.on("change:loaded_filename", syncDbState);
+      model.on("change:dirty", syncDbState);
+      model.on("change:file_exists", syncDbState);
       dbfile.addEventListener("input", () => {
         model.set("database_filename", dbfile.value);
         model.save_changes();
+        syncDbState();
       });
       $(".tbw-reload").addEventListener("click", () => model.send({ type: "reload_database" }));
       $(".tbw-write").addEventListener("click", () => model.send({ type: "write_database" }));
@@ -509,29 +539,39 @@ class ToolbarWidget(anywidget.AnyWidget):
         if (dbPop.classList.contains("open")) model.send({ type: "refresh_database_files" });
       });
 
-      // ── kernel -> browser: errors, save-as confirmation ────────────────
+      // ── kernel -> browser: errors, confirmations ──────────────────────
+      // pendingAction is echoed back on confirm so a banner left over from an
+      // earlier, abandoned prompt can't trigger the wrong operation.
+      let pendingAction = null;
       model.on("msg:custom", (msg) => {
         if (!msg) return;
         if (msg.type === "create_error") {
           const target = msg.target === "recipe" ? errRecipe : errIngredient;
           target.textContent = msg.message || "Error";
         } else if (msg.type === "db_error") {
+          pendingAction = null;
           bannerMsg.textContent = msg.message || "Error";
           bannerConfirm.style.display = "none";
           banner.classList.add("tbw-banner-error");
           banner.style.display = "flex";
         } else if (msg.type === "db_confirm") {
+          pendingAction = msg.action || "write";
           bannerMsg.textContent = msg.message || "";
+          bannerConfirm.textContent = msg.confirm_label || "Confirm";
           bannerConfirm.style.display = "";
-          banner.classList.remove("tbw-banner-error");
+          banner.classList.toggle("tbw-banner-error", !!msg.danger);
           banner.style.display = "flex";
         }
       });
       bannerConfirm.addEventListener("click", () => {
-        model.send({ type: "confirm_write" });
+        if (pendingAction) model.send({ type: "confirm_action", action: pendingAction });
+        pendingAction = null;
         banner.style.display = "none";
       });
-      bannerCancel.addEventListener("click", () => { banner.style.display = "none"; });
+      bannerCancel.addEventListener("click", () => {
+        pendingAction = null;
+        banner.style.display = "none";
+      });
     }
 
     export default { render };

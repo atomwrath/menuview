@@ -212,35 +212,93 @@ class DataFrameExplorer:
             t = content.get('type')
             fname = self.toolbar.database_filename.strip()
 
+            def _confirm(action, message, confirm_label, danger=False):
+                self._pending_db_action = (action, fname)
+                self.toolbar.send({'type': 'db_confirm', 'action': action,
+                                   'message': message,
+                                   'confirm_label': confirm_label,
+                                   'danger': danger})
+
+            def _error(message):
+                self._pending_db_action = None
+                self.toolbar.send({'type': 'db_error', 'message': message})
+
+            def _do_write(target):
+                try:
+                    self.write_database(target)
+                except Exception as exc:
+                    _error(f"Error writing '{target}': {exc}")
+
+            def _do_reload(target):
+                try:
+                    self.reload_database(target)
+                except Exception as exc:
+                    _error(f"Error reading '{target}': {exc}")
+                    return
+                self.mark_database_clean(target)
+
+            def _do_blank(target):
+                _reset_to_blank()
+                self.excel_filename = target
+                self._loaded_snapshot = self._db_snapshot()
+                self.toolbar.loaded_filename = target
+                self.toolbar.dirty = False
+                self.toolbar.file_exists = False
+
             if t == 'reload_database':
-                if os.path.exists(fname):
-                    self.reload_database(fname)
-                    self.toolbar.file_exists = True
+                if not fname:
+                    _error('Enter a database filename first.')
+                elif os.path.exists(fname):
+                    if self.is_database_dirty():
+                        loaded = (self.excel_filename or '').strip() or 'the current database'
+                        _confirm('reload',
+                                 f"Unsaved changes in '{loaded}' will be lost. "
+                                 f"Load '{fname}' anyway?",
+                                 'Discard & load', danger=True)
+                    else:
+                        _do_reload(fname)
                 else:
-                    _reset_to_blank()
-                    self.toolbar.file_exists = False
+                    # Was a silent _reset_to_blank(): one typo in the filename
+                    # threw away the whole in-memory session with no warning.
+                    _confirm('blank',
+                             f"'{fname}' does not exist. Clear the database in memory "
+                             f"and start a new, empty one?",
+                             'New blank database', danger=True)
 
             elif t == 'write_database':
-                if os.path.exists(fname):
-                    try:
-                        self.cc.write_cc(fname)
-                    except Exception as exc:
-                        self.toolbar.send({'type': 'db_error',
-                                           'message': f"Error writing '{fname}': {exc}"})
+                loaded = (self.excel_filename or '').strip()
+                if not fname:
+                    _error('Enter a database filename first.')
+                elif not os.path.exists(fname):
+                    _confirm('write',
+                             f"Create new file '{fname}' from the current database?",
+                             'Create')
+                elif fname != loaded:
+                    # The case the old code did silently. The filename box is
+                    # also how you pick a database to load, so a name sitting
+                    # in it is not evidence of intent to overwrite that file.
+                    _confirm('write',
+                             f"'{fname}' already exists and is NOT the database you "
+                             f"loaded ({loaded or 'nothing loaded'}). Saving replaces "
+                             f"everything in it.",
+                             'Overwrite', danger=True)
                 else:
-                    self.toolbar.send({
-                        'type': 'db_confirm',
-                        'message': f"'{fname}' does not exist. Save current database with this filename?"
-                    })
+                    _do_write(fname)
 
-            elif t == 'confirm_write':
-                try:
-                    self.cc.write_cc(fname)
-                    self.toolbar.file_exists = True
-                    self.toolbar.database_files = get_xlsx_files()
-                except Exception as exc:
-                    self.toolbar.send({'type': 'db_error',
-                                       'message': f"Error writing '{fname}': {exc}"})
+            elif t in ('confirm_action', 'confirm_write'):
+                pending = getattr(self, '_pending_db_action', None)
+                requested = content.get('action', 'write')
+                self._pending_db_action = None
+                if not pending or pending[0] != requested:
+                    _error('That confirmation is no longer valid — try again.')
+                else:
+                    action, target = pending
+                    if action == 'write':
+                        _do_write(target)
+                    elif action == 'reload':
+                        _do_reload(target)
+                    elif action == 'blank':
+                        _do_blank(target)
 
             elif t == 'refresh_database_files':
                 self.toolbar.database_files = get_xlsx_files()
@@ -267,6 +325,10 @@ class DataFrameExplorer:
         self.toolbar.on_msg(_toolbar_on_msg)
 
         def _toolbar_db_name_change(change):
+            # file_exists only -- sync_dirty_flag() here would re-hash both
+            # frames on every keystroke (~100ms in Pyodide at real sizes). The
+            # dirty state is recomputed fresh when reload/save is clicked,
+            # which is the moment it actually gates anything.
             self.toolbar.file_exists = os.path.exists(change['new'].strip())
         self.toolbar.observe(_toolbar_db_name_change, names='database_filename')
 
@@ -276,6 +338,12 @@ class DataFrameExplorer:
         self.toolbar.observe(lambda ch: self.hide_col(ch, 'note'), names='show_note')
         self.toolbar.observe(lambda ch: self.hide_col(ch, 'conversion'), names='show_conversion')
         self.toolbar.observe(lambda ch: self.hide_col(ch, 'menu price'), names='show_menu_price')
+
+        # main() reads the workbook before the Explorer is built, so take the
+        # baseline fingerprint here -- without it the first dirty check has
+        # nothing to compare against and every reload would prompt.
+        self._pending_db_action = None
+        self.mark_database_clean(self.excel_filename)
 
         toolbar = self.toolbar
 
@@ -420,6 +488,147 @@ class DataFrameExplorer:
             lines.append('\t'.join(clean(row[c]) for c in cols))
         return '\n'.join(lines)
 
+    # ══════════════════════════════════════════════════════════════════════
+    # database file safety
+    # ══════════════════════════════════════════════════════════════════════
+
+    # Columns excluded from the change check. Every one is DERIVED from the
+    # others and gets rewritten by ordinary browsing, so hashing them made the
+    # database look edited when nothing the user owns had changed:
+    #   'cost'      -- fast_cost._emit writes computed costs back into costdf
+    #                  on every lookup, and read_from_xlsx zeroes the column on
+    #                  load, so opening the first recipe flipped the flag.
+    #                  _reset_all_costs (cost-method dropdown) re-zeroes it.
+    #   'equ quant' / 'equ size' / '$/quantity' -- display-only, recomputed per
+    #                  render.
+    # Columns starting with '_' (_guide_index, _cost_used) are scratch state and
+    # go by the same rule, as does add_costx's 'cost N.Nx' output.
+    _DIRTY_IGNORE_COLUMNS = frozenset({'cost', 'equ quant', 'equ size', '$/quantity'})
+
+    def _dirty_columns(self, df):
+        def keep(c):
+            c = str(c)
+            if c in self._DIRTY_IGNORE_COLUMNS or c.startswith('_'):
+                return False
+            # add_costx output ('cost 3.0x'), same test data_frame_widget uses
+            return not (c.startswith('cost') and c.endswith('x'))
+        return [c for c in df.columns if keep(c)]
+
+    def _dirty_frame(self, df):
+        '''Normalised, user-authored slice of df, or None if there's nothing.
+
+        Values are flattened to stripped strings with NaN/None folded to '' so
+        a cell round-tripping through Excel (NaN -> '' -> NaN) or sitting in a
+        categorical column doesn't read as an edit.
+        '''
+        if df is None or len(df) == 0:
+            return None
+        cols = self._dirty_columns(df)
+        if not cols:
+            return None
+        out = df[cols].astype(object)
+        out = out.where(pd.notna(out), '')
+        return out.astype(str).apply(lambda s: s.str.strip())
+
+    def _db_snapshot(self):
+        '''Per-row hashes of the user-authored data, or None if hashing fails.
+
+        Row hashes rather than one aggregate digest so database_changes() can
+        report WHICH rows moved. Compared in order on purpose: reordering a
+        recipe's ingredients is a real edit, and an order-blind sum of hashes
+        would miss it.
+        '''
+        try:
+            snap = {}
+            for name, df in (('costdf', self.cc.costdf), ('uni_g', self.cc.uni_g)):
+                norm = self._dirty_frame(df)
+                if norm is None:
+                    snap[name] = ((), ())
+                else:
+                    h = pd.util.hash_pandas_object(norm, index=False)
+                    snap[name] = (tuple(str(c) for c in norm.columns),
+                                  tuple(int(v) for v in h.tolist()))
+            return snap
+        except Exception:
+            return None
+
+    def mark_database_clean(self, fname):
+        '''Record fname as the loaded database and snapshot its contents.'''
+        self.excel_filename = fname
+        self._loaded_snapshot = self._db_snapshot()
+        self.toolbar.loaded_filename = fname
+        self.toolbar.file_exists = os.path.exists(fname)
+        self.toolbar.dirty = False
+
+    def is_database_dirty(self):
+        '''True if recipes, quantities, or guide entries differ from what was
+        last loaded or saved. Computed costs are deliberately not consulted --
+        they are recomputed from this data on demand and carry nothing typed.
+        '''
+        snap = getattr(self, '_loaded_snapshot', None)
+        if snap is None:
+            return True
+        cur = self._db_snapshot()
+        return cur is None or cur != snap
+
+    def sync_dirty_flag(self):
+        self.toolbar.dirty = self.is_database_dirty()
+        return self.toolbar.dirty
+
+    def database_changes(self, max_rows=15):
+        '''Debug helper: report what the change check thinks differs.
+
+        Run this from a notebook cell if the unsaved-changes prompt ever fires
+        when it shouldn't -- it names the frame, the column set, and the rows
+        responsible instead of leaving it a guess.
+        '''
+        base = getattr(self, '_loaded_snapshot', None)
+        if base is None:
+            print('No baseline snapshot — nothing has been loaded or saved yet.')
+            return
+        cur = self._db_snapshot()
+        if cur is None:
+            print('Snapshot failed; treating the database as changed.')
+            return
+        if cur == base:
+            print('No changes since load/save.')
+            return
+        for name, df in (('costdf', self.cc.costdf), ('uni_g', self.cc.uni_g)):
+            bcols, brows = base[name]
+            ccols, crows = cur[name]
+            if bcols == ccols and brows == crows:
+                continue
+            print(f'--- {name} ---')
+            if bcols != ccols:
+                print(f'  columns changed: {list(bcols)} -> {list(ccols)}')
+            print(f'  rows: {len(brows)} -> {len(crows)}')
+            bset = set(brows)
+            changed = [i for i, v in enumerate(crows) if v not in bset]
+            if not changed:
+                print('  same row contents, different order')
+                continue
+            print(f'  {len(changed)} new/modified row(s); first {min(len(changed), max_rows)}:')
+            cols = self._dirty_columns(df)
+            for i in changed[:max_rows]:
+                if i < len(df):
+                    print(f'    [{i}] ' + str({c: df.iloc[i][c] for c in cols[:6]}))
+
+    def write_database(self, fname=None):
+        '''Write the in-memory database to fname (default: the loaded file).
+
+        The single funnel for every save path -- toolbar and OrderGuideReader --
+        so the loaded-filename bookkeeping and the dirty flag can't drift apart.
+        Raises on failure; callers surface the message their own way.
+        '''
+        if not fname:
+            fname = (self.excel_filename or '').strip()
+        if not fname:
+            raise ValueError('No database filename to save to.')
+        self.cc.write_cc(fname)
+        self.mark_database_clean(fname)
+        self.toolbar.database_files = get_xlsx_files()
+        return fname
+
     def refresh_search_options(self):
         nicks = set(self.cc.uni_g['nickname'].dropna().unique())
         ingrs = set(self.cc.costdf['ingredient'].dropna().unique())
@@ -438,6 +647,7 @@ class DataFrameExplorer:
         very in-memory changes we're trying to surface.
         """
         self.refresh_search_options()
+        self.sync_dirty_flag()
         self.menubutton_hbox.children = tuple(self._build_menu_buttons())
         if self.df_widget.last_lookup:
             if self.df_widget.widget_mode == 'Flatten':

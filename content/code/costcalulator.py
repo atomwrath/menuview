@@ -461,9 +461,31 @@ class CostCalculator:
             # rather than raising KeyError.
             orderedcost = orderedcost.reindex(columns=self.cost_columns)
 
-        with pd.ExcelWriter(filename) as writer:
-            self.uni_g.to_excel(writer, sheet_name=self.guide_sheet_name, index=False)
-            orderedcost.to_excel(writer, sheet_name=self.cost_sheet_name, index=False)
+        # Write to a sibling temp file, then swap it in. The old code opened
+        # ExcelWriter on the real target, which truncates it immediately -- a
+        # failure between the two to_excel calls left a half-written workbook
+        # where a good database used to be. The temp name has to keep an .xlsx
+        # extension: pandas picks its engine from the extension and rejects
+        # anything else, even when engine= is passed explicitly.
+        import os as _os
+        tmp = f"{filename}.part.xlsx"
+        try:
+            with pd.ExcelWriter(tmp) as writer:
+                self.uni_g.to_excel(writer, sheet_name=self.guide_sheet_name, index=False)
+                orderedcost.to_excel(writer, sheet_name=self.cost_sheet_name, index=False)
+            try:
+                _os.replace(tmp, filename)
+            except OSError:
+                # Emscripten's FS doesn't always implement replace-onto-existing.
+                if _os.path.exists(filename):
+                    _os.remove(filename)
+                _os.rename(tmp, filename)
+        finally:
+            if _os.path.exists(tmp):
+                try:
+                    _os.remove(tmp)
+                except OSError:
+                    pass
     
     def ordered_xlsx(self, filename, oldcostsheets=None, cost_multipliers=[3.0, 3.5]):
         ''' create ordered xls from cost dataframe (cdf)

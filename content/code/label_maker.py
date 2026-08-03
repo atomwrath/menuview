@@ -44,11 +44,14 @@ Layout
     else limiting how large the auto-fit font grows.
 
     Two independent column selections feed the label: `columns` picks
-    which fields appear per ingredient in the body (Table or List
-    format); `header_columns` separately picks which fields from the
-    recipe's own top row (yield, total cost, etc.) appear as a subtitle
-    under the title. 'ingredient' isn't offered for header_columns since
-    that's just the recipe name, already shown as the title itself.
+    the ingredient body's OTHER fields (Table or List format) --
+    'ingredient' itself is never in this list; it's gated separately by
+    show_ingredient, the same way show_title gates the headline as a
+    whole rather than being one more entry in header_columns.
+    `header_columns` separately picks which fields from the recipe's own
+    top row (yield, total cost, etc.) appear as a subtitle under the
+    title. 'ingredient' isn't offered for header_columns since that's
+    just the recipe name, already shown as the title itself.
 
     Table format: the first selected column (usually 'ingredient')
     word-wraps; the remaining columns are packed to the right edge,
@@ -87,6 +90,18 @@ Controls panel
     popover checklists (portal-positioned like menu_button_widget.py's
     menu, so no overflow context can clip them).
 
+    Show-on-label toggles: Title, Ingredient, Date, Year, Column headers.
+    Ingredient is its own boolean trait (show_ingredient), the same
+    pattern as show_title: off hides the WHOLE ingredient body -- both
+    'ingredient' itself and whatever's picked in the "Other columns"
+    popover -- rather than leaving other columns (quantity, cost, etc.)
+    visible on their own. `columns` therefore never contains 'ingredient'
+    at all; it's purely the "other" fields, and the layout composes the
+    two (show_ingredient + columns) into the actual rendered column list
+    at render time. The "Other columns" popover disables itself, mirroring
+    "Title columns" disabling when Title is off, while Ingredient is off
+    -- its selections aren't lost, just not applied until re-enabled.
+
 Data flow
     The kernel fills title / date_str / all_columns / header_row / rows_all /
     rows_selection once when the widget is created (rows and header_row are
@@ -115,8 +130,10 @@ Data flow
     change and reloaded the next time a LabelMakerWidget is constructed —
     "last used" survives across labels and kernel restarts, no separate
     Save button. A fresh install starts at 203 dpi (common thermal-printer
-    resolution) and 100% text scale until something else gets saved.
-    Content (title, date, header_row, rows) is per-use and never persisted.
+    resolution), 100% text scale, Title and Ingredient on with no other
+    columns selected in either popover, Date on, Year off, until something
+    else gets saved. Content (title, date, header_row, rows) is per-use
+    and never persisted.
 
 Format styles
     'table'  the original layout: first column wraps, remaining columns
@@ -132,6 +149,8 @@ Format styles
 
 import json
 import os
+import atexit
+import threading
 
 import anywidget
 import traitlets
@@ -145,10 +164,20 @@ SETTINGS_FILE = 'label_settings.json'   # last-used export settings, in cwd
 _PERSISTED_TRAITS = (
     'columns', 'header_columns', 'width_in', 'height_in', 'dpi', 'format_style',
     'show_date', 'show_year', 'show_title', 'show_headers', 'copies', 'text_scale',
-    'initials',
+    'initials', 'bridge_url', 'bridge_printer',
 )
 
 _IS_PYODIDE = (sys.platform == 'emscripten')
+
+# Auto-start the local print bridge when a label maker is opened. Only has
+# any effect off Pyodide (in JupyterLite the kernel is a WASM sandbox that
+# cannot spawn a process or bind a socket -- there, the bridge has to be
+# started by the OS at login: `python3 label_bridge.py install`, once).
+# Set to False to opt out.
+AUTOSTART_BRIDGE = True
+
+_bridge_started = False   # per-session latch; the probe itself is idempotent
+                          # but there's no point re-checking on every label
 
 # In-memory fallback for Pyodide -- see _on_persisted_change below for why
 # disk writes are avoided there. Module-level so "last used" still carries
@@ -179,6 +208,41 @@ def _save_settings(values):
             json.dump(values, f, indent=2)
     except Exception:
         pass   # best-effort -- a failed save shouldn't block printing a label
+
+
+def _autostart_bridge(printer=None):
+    """Bring the local print bridge up, if this environment can.
+
+    Called on widget construction so opening a label just works with no
+    terminal step. Deliberately fire-and-forget in a daemon thread: starting
+    a process and polling for it to bind takes a beat, and nothing about the
+    label maker should wait on the printer being reachable. Every failure
+    path is silent -- the widget already degrades to Print / PDF and shows
+    the bridge as offline in its own status line.
+
+    Does nothing under JupyterLite/Pyodide, where the kernel is a
+    WebAssembly sandbox that cannot spawn processes or open sockets. There
+    the bridge must already be running on the host machine; installing it as
+    a login service (`python3 label_bridge.py install`) is the one-time
+    setup that makes that true permanently.
+    """
+    global _bridge_started
+    if _bridge_started or _IS_PYODIDE:
+        return
+    _bridge_started = True   # set first: one attempt per kernel session
+    try:
+        import threading
+        import label_bridge
+    except Exception:
+        return               # bridge module not alongside us -- fine
+
+    def _run():
+        try:
+            label_bridge.ensure_running(printer=printer)
+        except Exception:
+            pass             # widget already degrades to Print / PDF
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 class LabelMakerWidget(anywidget.AnyWidget):
@@ -214,9 +278,15 @@ class LabelMakerWidget(anywidget.AnyWidget):
     # ── options (two-way; browser writes back on every control change;
     #    persisted to SETTINGS_FILE -- see __init__ below) ────────────────
     columns        = traitlets.List(traitlets.Unicode(),
-                                    default_value=['ingredient', 'quantity']).tag(sync=True)
+                                    default_value=[]).tag(sync=True)
+                                    # the ingredient body's OTHER columns
+                                    # (quantity, cost, etc.) -- never
+                                    # includes 'ingredient' itself, which
+                                    # is governed separately by
+                                    # show_ingredient below (same split as
+                                    # show_title / header_columns)
     header_columns = traitlets.List(traitlets.Unicode(),
-                                    default_value=['quantity', 'cost']).tag(sync=True)
+                                    default_value=[]).tag(sync=True)
                                     # which header_row fields show in the
                                     # title subtitle -- independent of
                                     # `columns` above, which is the
@@ -226,16 +296,34 @@ class LabelMakerWidget(anywidget.AnyWidget):
     dpi          = traitlets.Int(203).tag(sync=True)          # thermal-label default
     format_style = traitlets.Unicode('table').tag(sync=True)  # 'table' | 'list'
     show_date    = traitlets.Bool(True).tag(sync=True)   # shows the month/day portion
-    show_year    = traitlets.Bool(True).tag(sync=True)   # shows the year portion -- independent
+    show_year    = traitlets.Bool(False).tag(sync=True)  # shows the year portion -- independent
                                                           # of show_date, so Year alone (Date off)
                                                           # displays just the year on its own
     show_title   = traitlets.Bool(True).tag(sync=True)
+    show_ingredient = traitlets.Bool(True).tag(sync=True)
+                                    # gates the WHOLE ingredient body --
+                                    # 'ingredient' itself plus whatever's
+                                    # picked in `columns` -- off means no
+                                    # per-row content at all, the same way
+                                    # show_title gates the headline+subtitle
+                                    # as a unit rather than word-by-word
     show_headers = traitlets.Bool(False).tag(sync=True)  # column-name labels: both the table's
                                                           # own header row AND the "field: value"
                                                           # labels in the title-row subtitle
     copies       = traitlets.Int(1).tag(sync=True)
     text_scale   = traitlets.Float(1.0).tag(sync=True)   # manual +/- on top of auto-fit
     initials     = traitlets.Unicode('').tag(sync=True)  # e.g. "JS" -- displays next to the date
+
+    # ── local print bridge (label_bridge.py) ─────────────────────────────
+    #    Where to reach the bridge, and which of its queues to spool to.
+    #    Persisted like any other preference, so "print to the RW403B" is a
+    #    one-time setup. Everything *about* the printer (label size,
+    #    darkness, speed, media) lives in the OS print queue, not here --
+    #    the bridge only ever hands over a PNG at a declared DPI.
+    #    bridge_url may include a ?token=... query when the bridge is bound
+    #    to a LAN address for iPad use.
+    bridge_url     = traitlets.Unicode('http://127.0.0.1:8765').tag(sync=True)
+    bridge_printer = traitlets.Unicode('').tag(sync=True)   # '' = system default
 
     # ── free-text note (two-way, browser-typed) -- deliberately NOT in
     #    _PERSISTED_TRAITS. Unlike the options above, a note is usually
@@ -251,8 +339,9 @@ class LabelMakerWidget(anywidget.AnyWidget):
         # Apply last-saved settings (skipping anything the caller already
         # pinned via kwargs), then watch for further changes -- including
         # ones made straight in the browser -- so whatever's on screen
-        # when the panel closes is what opens next time.
+        # is autosaved and carries into the next label.
         self._settings_dirty = False
+        self._flush_timer = None
         saved = _load_settings()
         for name in _PERSISTED_TRAITS:
             if name in saved and name not in kwargs:
@@ -262,18 +351,44 @@ class LabelMakerWidget(anywidget.AnyWidget):
                     pass   # stale/malformed value -- keep the trait default
         for name in _PERSISTED_TRAITS:
             self.observe(self._on_persisted_change, names=name)
+        # Backstop for whatever's still sitting inside the debounce window
+        # (see _on_persisted_change) if the kernel exits normally before it
+        # fires. Not a substitute for the debounced flush -- atexit doesn't
+        # run on a hard kill -- just insurance against losing the last
+        # half-second of edits.
+        atexit.register(self.flush_settings)
+        _autostart_bridge(self.bridge_printer or None)
 
     def _on_persisted_change(self, change):
-        # Just flag dirty here -- cheap, in-memory, can't stall anything.
-        # The actual write is deferred to flush_settings(), called once
-        # when the panel closes, instead of on every single change (every
-        # checkbox click, every Initials keystroke). See the module-level
-        # note on _save_settings for why immediate writes are risky here.
         self._settings_dirty = True
+        if _IS_PYODIDE:
+            # No disk I/O to batch -- it's just an in-memory dict update
+            # (see _save_settings) -- and background timers aren't reliably
+            # useful here: scheduled callbacks in the Pyodide/JupyterLite
+            # runtime don't resume the way they would in a normal Python
+            # process. Flushing inline is both cheap and the only path
+            # that's actually guaranteed to run.
+            self.flush_settings()
+            return
+        # Debounce real disk writes: every checkbox click or Initials
+        # keystroke re-arms an 0.8s timer rather than writing immediately,
+        # so a burst of changes costs one write, not N. This is also, in
+        # effect, the *only* thing that ever persists settings at all --
+        # there is no "Close" affordance anywhere in this widget to hang an
+        # explicit flush off of, so waiting for one (as flush_settings'
+        # docstring used to assume) meant settings were never written.
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+        self._flush_timer = threading.Timer(0.8, self.flush_settings)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
 
     def flush_settings(self):
-        """Persist current settings if anything changed since the last
-        flush. Called once from the panel's Close button."""
+        """Persist current settings to disk if anything changed since the
+        last flush. Called automatically (debounced) on every settings
+        change -- see _on_persisted_change -- and also registered with
+        atexit as a last-chance backstop for whatever's still pending
+        inside the debounce window when the kernel exits normally."""
         if not self._settings_dirty:
             return
         _save_settings({name: getattr(self, name) for name in _PERSISTED_TRAITS})
@@ -331,6 +446,22 @@ class LabelMakerWidget(anywidget.AnyWidget):
         scope === "selection" ? (model.get("rows_selection") || [])
                               : (model.get("rows_all") || []);
 
+      // The body's actual rendered column list: 'ingredient' leads it
+      // when show_ingredient is on, followed by whatever's picked in the
+      // "Other columns" popover (`columns`, which never itself contains
+      // 'ingredient' -- see the trait comment). show_ingredient off
+      // collapses this to an empty list entirely, hiding the whole body
+      // -- not just the item name -- the same way show_title gates the
+      // headline+subtitle as a unit rather than field-by-field. Shared
+      // by layout() and fileStem() so they can never drift apart on what
+      // "the body's columns" means.
+      const effectiveCols = () => {
+        const all = model.get("all_columns") || [];
+        const other = (model.get("columns") || [])
+          .filter((c) => all.includes(c) && c !== "ingredient");
+        return model.get("show_ingredient") ? ["ingredient", ...other] : [];
+      };
+
       // Word-splitter shared by both wrap functions: any run of
       // whitespace EXCEPT the non-breaking space (U+00A0) is a break
       // opportunity. \s in JS regex matches U+00A0, so a plain /\s+/
@@ -386,8 +517,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
         // just because its "smaller dimension" is itself already large.
         const pad = Math.min(Math.max(Math.min(W, H) * 0.055, 5), PX_PER_IN * 0.125);
         const innerW = W - 2 * pad;
-        const cols = (model.get("columns") || [])
-          .filter((c) => (model.get("all_columns") || []).includes(c));
+        const cols = effectiveCols();
         const headerCols = (model.get("header_columns") || [])
           .filter((c) => (model.get("all_columns") || []).includes(c) && c !== "ingredient");
         const rows = currentRows();
@@ -676,8 +806,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
         let stem = `${base}_${model.get("width_in")}x${model.get("height_in")}`;
         if (model.get("format_style") === "per_item") {
           const rows = currentRows();
-          const itemCols = (model.get("columns") || [])
-            .filter((c) => (model.get("all_columns") || []).includes(c));
+          const itemCols = effectiveCols();
           const item = rows[Math.min(itemIndex, Math.max(rows.length - 1, 0))];
           const itemName = item && itemCols.length
             ? String(item[itemCols[0]] ?? "").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_")
@@ -693,7 +822,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
       // throughout this file; onDone is called after the file is saved
       // (or after a failure) so a caller can sequence multiple downloads
       // one after another instead of firing them all at once.
-      function downloadOnePNG(onDone) {
+      function renderCanvas(onReady) {
         const { svg } = scaledLayout();
         const dpi = model.get("dpi");
         const pw = Math.round(model.get("width_in") * dpi);
@@ -706,21 +835,32 @@ class LabelMakerWidget(anywidget.AnyWidget):
           ctx.fillStyle = "#fff";
           ctx.fillRect(0, 0, pw, ph);
           ctx.drawImage(img, 0, 0, pw, ph);
+          onReady(canvas, pw, ph, dpi);
+        };
+        img.onerror = () => onReady(null, pw, ph, dpi);
+        img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      }
+
+      function downloadOnePNG(onDone) {
+        renderCanvas((canvas, pw, ph) => {
+          if (!canvas) {
+            setStatus("PNG export failed (SVG rasterize).", true);
+            if (onDone) onDone(false);
+            return;
+          }
           canvas.toBlob((blob) => {
             if (!blob) { setStatus("PNG export failed in this browser.", true); if (onDone) onDone(false); return; }
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = `${fileStem()}_${dpi}dpi.png`;
+            a.download = `${fileStem()}_${model.get("dpi")}dpi.png`;
             document.body.appendChild(a);
             a.click();
             a.remove();
             setTimeout(() => URL.revokeObjectURL(url), 4000);
             if (onDone) onDone(true, a.download, pw, ph);
           }, "image/png");
-        };
-        img.onerror = () => { setStatus("PNG export failed (SVG rasterize).", true); if (onDone) onDone(false); };
-        img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+        });
       }
 
       // "Download PNG" always exports just the one currently shown --
@@ -762,6 +902,163 @@ class LabelMakerWidget(anywidget.AnyWidget):
           downloadOnePNG(() => { i += 1; setTimeout(next, 300); });
         };
         next();
+      }
+
+      // ── local print bridge ───────────────────────────────────────────
+      // label_bridge.py, running on the machine that owns the printer,
+      // hands PNGs to the OS print queue. All the printer *settings*
+      // (label size, darkness, speed, media) live in that queue,
+      // configured once through the normal OS printer UI -- nothing about
+      // the printer is modelled here.
+      //
+      // bridge_url may carry a ?token=... query (the bridge accepts the
+      // token as either a header or a query param), so paths are spliced
+      // in before the query string rather than appended to the whole URL.
+      const bridgeURL = (path) => {
+        const raw = (model.get("bridge_url") || "").trim();
+        if (!raw) return null;
+        const qi = raw.indexOf("?");
+        const base = (qi === -1 ? raw : raw.slice(0, qi)).replace(/\/+$/, "");
+        const qs = qi === -1 ? "" : raw.slice(qi);
+        return base ? base + path + qs : null;
+      };
+
+      // Probes the bridge and repopulates the printer dropdown. Called on
+      // render, whenever the URL is edited, and again after any failed
+      // print (so unplugging the machine mid-session hides the button
+      // rather than leaving a control that silently no-ops).
+      // `retries` exists because the kernel starts the bridge on widget
+      // construction, and spawning a process + binding a socket takes a
+      // beat longer than the first render. Without a retry the panel would
+      // reliably show "not running" for a bridge that is seconds away from
+      // answering, and the user would have to hit the refresh button for
+      // something that was already working. Backoff is ~0.4s, growing, for
+      // about 6s total -- only on the initial probe; manual re-checks and
+      // post-failure re-probes pass 0 and report immediately.
+      function probeBridge(retries) {
+        retries = retries || 0;
+        const sel = q(".lmw-printer");
+        const btn = q(".lmw-direct");
+        const stat = q(".lmw-bridge-status");
+        const url = bridgeURL("/printers");
+        const offline = (msg) => {
+          btn.style.display = "none";
+          q(".lmw-print").classList.add("lmw-primary");
+          sel.innerHTML = `<option value="">(bridge offline)</option>`;
+          stat.textContent = msg;
+          stat.classList.add("lmw-bad");
+          return false;
+        };
+        const retry = () => {
+          stat.textContent = "starting\u2026";
+          stat.classList.remove("lmw-bad");
+          return new Promise((res) => setTimeout(
+            () => res(probeBridge(retries - 1)), 400 + (6 - retries) * 250));
+        };
+        if (!url) return Promise.resolve(offline("no URL set"));
+        return fetch(url, { method: "GET" })
+          .then((r) => r.json())
+          .then((j) => {
+            if (!j || !j.ok) throw new Error("bad response");
+            const names = j.printers || [];
+            const cur = model.get("bridge_printer") || j.default || "";
+            let opts = names.map((p) =>
+              `<option value="${esc(p)}"${p === cur ? " selected" : ""}>${esc(p)}</option>`
+            ).join("");
+            // A queue saved from a previous session that the bridge no
+            // longer reports still gets an entry, flagged -- silently
+            // reassigning the printer out from under a saved setting
+            // would be worse than showing that it's missing.
+            if (cur && !names.includes(cur)) {
+              opts = `<option value="${esc(cur)}" selected>${esc(cur)} (not found)</option>` + opts;
+            }
+            sel.innerHTML = opts || `<option value="">(system default)</option>`;
+            if (!model.get("bridge_printer") && j.default) {
+              model.set("bridge_printer", j.default);
+              model.save_changes();
+            }
+            btn.style.display = "";
+            q(".lmw-print").classList.remove("lmw-primary");
+            stat.textContent = "connected";
+            stat.classList.remove("lmw-bad");
+            return true;
+          })
+          .catch(() => (retries > 0 ? retry() : offline("not running")));
+      }
+
+      // POSTs one already-rendered canvas. Copies are handled by the print
+      // queue (x-copies -> `lp -n`) rather than by sending the same bytes
+      // N times, so 20 copies is one request and one spool job.
+      function postCanvas(canvas, copies) {
+        return new Promise((resolve, reject) => {
+          const url = bridgeURL("/print");
+          if (!url) { reject(new Error("no bridge URL")); return; }
+          canvas.toBlob((blob) => {
+            if (!blob) { reject(new Error("rasterize failed")); return; }
+            fetch(url, {
+              method: "POST",
+              headers: {
+                "content-type": "image/png",
+                "x-copies": String(copies),
+                "x-printer": model.get("bridge_printer") || "",
+                "x-dpi": String(model.get("dpi")),
+                "x-width-in": String(model.get("width_in")),
+                "x-height-in": String(model.get("height_in")),
+              },
+              body: blob,
+            })
+              .then((r) => r.json().catch(() => ({ ok: r.ok })))
+              .then((j) => (j && j.ok
+                ? resolve(j)
+                : reject(new Error((j && j.message) || "printer rejected the job"))))
+              .catch(() => reject(new Error("bridge unreachable")));
+          }, "image/png");
+        });
+      }
+
+      const rasterize = () => new Promise((res) => renderCanvas((c) => res(c)));
+
+      // Direct print. Mirrors printLabels' batching exactly: "Label per
+      // item" sends one job per item in the current scope (each at
+      // `copies`), every other style sends the single label on screen.
+      // itemIndex is restored in a finally block, so a mid-batch failure
+      // doesn't strand the preview pointing at whichever item died.
+      async function directPrint() {
+        const n = Math.max(1, model.get("copies") | 0);
+        const isPerItem = model.get("format_style") === "per_item";
+        const btn = q(".lmw-direct");
+        const savedIndex = itemIndex;
+        btn.disabled = true;
+        try {
+          if (isPerItem) {
+            const rows = currentRows();
+            if (!rows.length) {
+              setStatus("No items to print in this selection.", true);
+              return;
+            }
+            for (let i = 0; i < rows.length; i++) {
+              itemIndex = i;
+              setStatus(`Printing ${i + 1} of ${rows.length}\u2026`, false);
+              const canvas = await rasterize();
+              if (!canvas) throw new Error("label rasterize failed");
+              await postCanvas(canvas, n);
+            }
+            setStatus(`Sent ${rows.length} label${rows.length === 1 ? "" : "s"} to the printer.`, false);
+          } else {
+            setStatus("Printing\u2026", false);
+            const canvas = await rasterize();
+            if (!canvas) throw new Error("label rasterize failed");
+            await postCanvas(canvas, n);
+            setStatus(`Sent ${n} label${n === 1 ? "" : "s"} to the printer.`, false);
+          }
+        } catch (e) {
+          setStatus(`Direct print failed (${e.message}) \u2014 use Print / PDF instead.`, true);
+          probeBridge();
+        } finally {
+          itemIndex = savedIndex;
+          btn.disabled = false;
+          updatePreview();
+        }
       }
 
       function printLabels() {
@@ -862,7 +1159,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
                     <option value="list">Ingredient list</option>
                     <option value="per_item">Label per item</option>
                   </select>
-                  <span class="lmw-lbl">Ingredient columns</span>
+                  <span class="lmw-lbl">Other columns</span>
                   <button type="button" class="lmw-dd lmw-dd-cols">
                     <span class="lmw-dd-text"></span><span class="lmw-dd-caret">&#9662;</span>
                   </button>
@@ -904,14 +1201,29 @@ class LabelMakerWidget(anywidget.AnyWidget):
                   <span class="lmw-lbl">Show on label</span>
                   <span class="lmw-inline lmw-checks">
                     <label><input type="checkbox" class="lmw-title-cb"> Title</label>
+                    <label><input type="checkbox" class="lmw-ingredient-cb"> Ingredient</label>
                     <label><input type="checkbox" class="lmw-date-cb"> Date</label>
                     <label><input type="checkbox" class="lmw-year-cb"> Year</label>
                     <label><input type="checkbox" class="lmw-head-cb"> Column headers</label>
                   </span>
                   <span class="lmw-lbl">Initials</span>
                   <input type="text" class="lmw-initials-input" placeholder="e.g. JS">
-                  <span class="lmw-lbl">Note</span>
+                   <span class="lmw-lbl">Note</span>
                   <input type="text" class="lmw-note-input" placeholder="e.g. Keep refrigerated">
+                </div>
+              </div>
+              <div class="lmw-sec">
+                <div class="lmw-sec-title">Printer</div>
+                <div class="lmw-grid">
+                  <span class="lmw-lbl">Send to</span>
+                  <select class="lmw-printer"><option value="">(bridge offline)</option></select>
+                  <span class="lmw-lbl">Bridge</span>
+                  <span class="lmw-inline">
+                    <input type="text" class="lmw-bridge-url" style="width:11em"
+                           placeholder="http://127.0.0.1:8765">
+                    <button type="button" class="lmw-bridge-retry" title="Re-check">&#8635;</button>
+                    <span class="lmw-bridge-status lmw-muted-txt">checking&#8230;</span>
+                  </span>
                 </div>
               </div>
             </div>
@@ -931,6 +1243,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
             <span class="lmw-foot-spacer"></span>
             <button type="button" class="lmw-png">&#11015; PNG</button>
             <button type="button" class="lmw-png-all" style="display:none">&#11015; All PNGs</button>
+            <button type="button" class="lmw-direct lmw-primary" style="display:none">&#128424; Print</button>
             <button type="button" class="lmw-print lmw-primary">&#128424; Print / PDF</button>
             <span class="lmw-status"></span>
           </div>
@@ -980,12 +1293,14 @@ class LabelMakerWidget(anywidget.AnyWidget):
       }
 
       // Which columns a picker offers, and the current selection, for
-      // either kind. 'ingredient' isn't offered for the title-row picker
-      // since it's just the recipe name, already shown as the title.
-      const menuOptions = (kind) => {
-        const all = model.get("all_columns") || [];
-        return kind === "hcols" ? all.filter((c) => c !== "ingredient") : all;
-      };
+      // either kind. 'ingredient' isn't offered by EITHER popover: for
+      // "Title columns" it's the recipe name, already shown as the title;
+      // for "Other columns" it's the ingredient's own name, toggled by
+      // its own Show-on-label checkbox (show_ingredient) the same way
+      // Title toggles the headline+subtitle -- so it's a dedicated on/off
+      // control, never a member of either popover's own list.
+      const menuOptions = (kind) =>
+        (model.get("all_columns") || []).filter((c) => c !== "ingredient");
       const menuChosen = (kind) =>
         new Set(model.get(kind === "hcols" ? "header_columns" : "columns") || []);
 
@@ -1047,6 +1362,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
         q(".lmw-w").value = w; q(".lmw-h").value = h;
         q(".lmw-dpi").value = String(model.get("dpi"));
         q(".lmw-title-cb").checked = model.get("show_title");
+        q(".lmw-ingredient-cb").checked = model.get("show_ingredient");
         q(".lmw-date-cb").checked = model.get("show_date");
         q(".lmw-year-cb").checked = model.get("show_year");
         const initialsVal = model.get("initials") || "";
@@ -1106,6 +1422,17 @@ class LabelMakerWidget(anywidget.AnyWidget):
         hBtn.disabled = hdrOff;
         hBtn.title = hdrOff ? "Shown under the title \u2014 turn Title on to use" : "";
         if (hdrOff && menuKind === "hcols") closeMenu();
+
+        // "Other columns" only matters while Ingredient is on -- with it
+        // off the whole body is hidden, so its picks have nothing to
+        // render into; disable it the same way, without clearing the
+        // selections underneath (they come back the moment Ingredient
+        // is re-checked).
+        const bodyOff = !model.get("show_ingredient");
+        const cBtn = q(".lmw-dd-cols");
+        cBtn.disabled = bodyOff;
+        cBtn.title = bodyOff ? "Shown in the ingredient body \u2014 turn Ingredient on to use" : "";
+        if (bodyOff && menuKind === "cols") closeMenu();
 
         // an open column popover tracks model changes in place
         fillMenu();
@@ -1181,6 +1508,12 @@ class LabelMakerWidget(anywidget.AnyWidget):
       q(".lmw-title-cb").addEventListener("change", () => {
         model.set("show_title", q(".lmw-title-cb").checked); model.save_changes();
       });
+      // Ingredient has its own trait (show_ingredient), same pattern as
+      // Title -- off hides the whole body (name + Other columns), not
+      // just the name itself; see effectiveCols().
+      q(".lmw-ingredient-cb").addEventListener("change", () => {
+        model.set("show_ingredient", q(".lmw-ingredient-cb").checked); model.save_changes();
+      });
       q(".lmw-date-cb").addEventListener("change", () => {
         model.set("show_date", q(".lmw-date-cb").checked); model.save_changes();
       });
@@ -1213,6 +1546,21 @@ class LabelMakerWidget(anywidget.AnyWidget):
       q(".lmw-png").addEventListener("click", downloadPNG);
       q(".lmw-png-all").addEventListener("click", downloadAllPNGs);
       q(".lmw-print").addEventListener("click", printLabels);
+      q(".lmw-direct").addEventListener("click", directPrint);
+      q(".lmw-printer").addEventListener("change", () => {
+        model.set("bridge_printer", q(".lmw-printer").value);
+        model.save_changes();
+      });
+      q(".lmw-bridge-url").addEventListener("change", () => {
+        model.set("bridge_url", q(".lmw-bridge-url").value.trim());
+        model.save_changes();
+        probeBridge();
+      });
+      q(".lmw-bridge-retry").addEventListener("click", () => {
+        q(".lmw-bridge-status").textContent = "checking\u2026";
+        probeBridge();
+      });
+      q(".lmw-bridge-url").value = model.get("bridge_url") || "";
 
       // coalesce trait updates into one repaint per message batch
       let pending = false;
@@ -1223,10 +1571,15 @@ class LabelMakerWidget(anywidget.AnyWidget):
       };
       ["title", "date_str", "all_columns", "header_row", "rows_all", "rows_selection",
        "columns", "header_columns", "width_in", "height_in", "dpi", "format_style", "text_scale",
-       "show_date", "show_year", "show_title", "show_headers", "copies", "label_note",
-       "initials"].forEach((t) => model.on(`change:${t}`, schedule));
+       "show_date", "show_year", "show_title", "show_ingredient", "show_headers", "copies",
+       "label_note", "initials"].forEach((t) => model.on(`change:${t}`, schedule));
 
       refresh();
+
+      // Last, and deliberately guarded: the preview must paint even if the
+      // bridge probe blows up. Anything thrown here would otherwise abort
+      // render() and leave a blank panel with no error the user can see.
+      try { probeBridge(6); } catch (e) { /* bridge is optional */ }
     }
     export default { render };
     """
@@ -1296,6 +1649,7 @@ class LabelMakerWidget(anywidget.AnyWidget):
     /* labelled sections, titled like the grids' card headers */
     .lmw-sec { padding: 5px 0 7px; }
     .lmw-sec + .lmw-sec { border-top: 1px solid var(--lmw-border-soft); }
+    .lmw-muted-txt { color: var(--lmw-muted); font-size: 11px; }
     .lmw-sec-title { font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
                      text-transform: uppercase; color: var(--lmw-muted);
                      padding: 2px 0 5px; }

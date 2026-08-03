@@ -1458,14 +1458,18 @@ class OrderGuideReader:
                 traceback.print_exc()
     
     def _current_database_filename(self):
-        """The filename Save Database should write to: whatever's currently
-        loaded in the Explorer's toolbar, or the legacy default if this
-        reader wasn't wired up to an explorer (e.g. the standalone
-        update_from_order_guides.py tool)."""
+        """The filename Save Database should write to: the database the
+        Explorer actually has LOADED, not whatever is currently typed in its
+        toolbar filename box.
+
+        The box doubles as a "load this next" target, so a name sitting in it
+        may be a file the user intended to open, never to overwrite. Reading it
+        here meant this tab -- which has no confirmation banner -- could clobber
+        an untouched database in one click. Falls back to the legacy default
+        when there's no explorer (the standalone update_from_order_guides.py).
+        """
         if self.explorer is not None:
-            fname = getattr(self.explorer.toolbar, 'database_filename', '').strip()
-            if fname:
-                return fname
+            return (getattr(self.explorer, 'excel_filename', '') or '').strip()
         return 'amc_menu_database.xlsx'
 
     def save_database(self, button):
@@ -1479,13 +1483,28 @@ class OrderGuideReader:
         fname = self._current_database_filename()
         with self.status_output:
             self.status_output.clear_output()
+            if not fname:
+                print("No database is loaded — open one in the Menu Explorer "
+                      "tab before saving.")
+                return
+
+            if self.explorer is not None:
+                typed = getattr(self.explorer.toolbar, 'database_filename', '').strip()
+                if typed and typed != fname:
+                    print(f"Note: the Explorer's filename box reads '{typed}', but the "
+                          f"loaded database is '{fname}' — saving to '{fname}'.")
+                    print("To write to the other name instead, use the save button in "
+                          "the Menu Explorer tab; it will ask you to confirm first.")
+
             print(f"Saving database to '{fname}'...")
-            
             try:
-                self.cc.write_cc(fname)
-                print(f"Database saved successfully to '{fname}'.")
                 if self.explorer is not None:
-                    self.explorer.toolbar.file_exists = True
+                    # Routes through the Explorer so loaded_filename and the
+                    # dirty flag stay in step with what's actually on disk.
+                    self.explorer.write_database(fname)
+                else:
+                    self.cc.write_cc(fname)
+                print(f"Database saved successfully to '{fname}'.")
             except Exception as e:
                 print(f"Error saving database: {str(e)}")
                 import traceback
